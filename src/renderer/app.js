@@ -60,6 +60,15 @@ const downloadsInstallBtn = $('#btn-downloads-install');
 const downloadsProgress = $('#downloads-progress');
 const downloadsProgressFill = $('#downloads-progress-fill');
 const downloadsProgressText = $('#downloads-progress-text');
+const downloadsPlaylistBtn = $('#btn-download-playlist');
+const downloadMenu = $('#download-menu');
+const downloadMenuTrack = $('#menu-download-track');
+const downloadMenuPlaylist = $('#menu-download-playlist');
+const downloadFormatModal = $('#download-format-modal');
+const downloadFormatTitle = $('#download-format-title');
+const downloadFormatSub = $('#download-format-sub');
+const downloadFormatNote = $('#download-format-note');
+const downloadFormatCancel = $('#download-format-cancel');
 const updateStatusEl = $('#update-status');
 const checkUpdatesBtn = $('#btn-check-updates');
 const installUpdateBtn = $('#btn-install-update');
@@ -251,6 +260,145 @@ const PLAYER_STATE_JS = `
         videoId,
         url: location.href,
         isAd
+      };
+    } catch (error) {
+      return { error: String(error) };
+    }
+  })()
+`;
+
+const PLAYLIST_STATE_JS = `
+  (() => {
+    try {
+      const textOf = (value) => {
+        if (!value) return '';
+        if (typeof value === 'string') return value.trim();
+        if (value.simpleText) return String(value.simpleText).trim();
+        if (Array.isArray(value.runs)) return value.runs.map((run) => run.text || '').join('').trim();
+        return '';
+      };
+      const durationOf = (value) => {
+        const text = textOf(value);
+        if (!text) return 0;
+        const parts = text.split(':').map((part) => Number(part) || 0);
+        return parts.reduce((total, part) => total * 60 + part, 0);
+      };
+      const thumbnailOf = (data) => {
+        const thumbnails = data && data.thumbnail && data.thumbnail.thumbnails;
+        if (!Array.isArray(thumbnails) || !thumbnails.length) return '';
+        return thumbnails[thumbnails.length - 1].url || '';
+      };
+      const cleanArtist = (value) => textOf(value).split('•')[0].replace(/\\s+/g, ' ').trim();
+      const items = [];
+      const seen = new Set();
+      const add = (meta) => {
+        const videoId = String((meta && meta.videoId) || '').trim();
+        if (!/^[A-Za-z0-9_-]{6,20}$/.test(videoId) || seen.has(videoId)) return;
+        seen.add(videoId);
+        items.push({
+          videoId,
+          title: String((meta && meta.title) || '').replace(/\\s+/g, ' ').trim().slice(0, 300),
+          artist: String((meta && meta.artist) || '').replace(/\\s+/g, ' ').trim().slice(0, 300),
+          album: '',
+          artwork: String((meta && meta.artwork) || '').slice(0, 1000),
+          duration: Number(meta && meta.duration) || 0
+        });
+      };
+
+      let playlistId = '';
+      try {
+        playlistId = new URL(location.href).searchParams.get('list') || '';
+      } catch (error) {}
+      if (!playlistId) {
+        try {
+          const player = document.querySelector('#movie_player');
+          playlistId = (player && player.getPlaylistId && player.getPlaylistId()) || '';
+        } catch (error) {}
+      }
+
+      const header = document.querySelector('ytmusic-responsive-header-renderer, ytmusic-detail-header-renderer');
+      const heading = header
+        ? (header.querySelector('h1, yt-formatted-string.title') || document.querySelector('ytmusic-header-renderer h1'))
+        : document.querySelector('ytmusic-header-renderer h1');
+      const title = heading ? (heading.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+
+      let headerArtists = [];
+      let headerArtwork = '';
+      if (header) {
+        headerArtists = Array.from(header.querySelectorAll('a[href*="channel/"], a[href*="browse/"]'))
+          .map((link) => (link.textContent || '').replace(/\\s+/g, ' ').trim())
+          .filter(Boolean);
+        headerArtists = Array.from(new Set(headerArtists));
+        const headerImage = header.querySelector('img');
+        if (headerImage) headerArtwork = headerImage.currentSrc || headerImage.src || '';
+      }
+      const headerArtist = headerArtists.join(' & ');
+
+      let pagePath = '';
+      try {
+        pagePath = new URL(location.href).pathname;
+      } catch (error) {}
+
+      const shelfSelectors = ['ytmusic-playlist-shelf-renderer'];
+      if (pagePath === '/playlist') {
+        shelfSelectors.push('ytmusic-section-list-renderer ytmusic-shelf-renderer');
+      }
+
+      for (const selector of shelfSelectors) {
+        for (const shelf of Array.from(document.querySelectorAll(selector))) {
+          for (const element of Array.from(shelf.querySelectorAll(
+            'ytmusic-responsive-list-item-renderer, ytmusic-two-row-item-renderer'
+          ))) {
+            const data = element.data;
+            if (!data) continue;
+            const videoId = (data.playlistItemData && data.playlistItemData.videoId)
+              || data.videoId
+              || '';
+            if (!videoId) continue;
+            const flex = Array.isArray(data.flexColumns) ? data.flexColumns : [];
+            const flexText = (index) => {
+              const column = flex[index] && flex[index].musicResponsiveListItemFlexColumnRenderer;
+              return column && column.text ? textOf(column.text) : '';
+            };
+            const fixed = Array.isArray(data.fixedColumns) ? data.fixedColumns : [];
+            const durationColumn = fixed[0] && fixed[0].musicResponsiveListItemFixedColumnRenderer;
+            const image = element.querySelector('img');
+            add({
+              videoId,
+              title: flexText(0),
+              artist: cleanArtist(flexText(1)) || headerArtist,
+              artwork: thumbnailOf(data)
+                || (image ? (image.currentSrc || image.src || '') : '')
+                || headerArtwork,
+              duration: durationOf(durationColumn && durationColumn.text)
+            });
+          }
+          if (items.length) break;
+        }
+        if (items.length) break;
+      }
+
+      const source = items.length ? 'playlist' : 'queue';
+      if (!items.length) {
+        for (const element of Array.from(document.querySelectorAll('ytmusic-player-queue-item'))) {
+          const data = element.data;
+          if (!data) continue;
+          add({
+            videoId: data.videoId,
+            title: textOf(data.title),
+            artist: cleanArtist(data.longBylineText) || cleanArtist(data.shortBylineText),
+            artwork: thumbnailOf(data),
+            duration: durationOf(data.lengthText)
+          });
+        }
+      }
+
+      return {
+        url: location.href,
+        playlistId,
+        title: title || (source === 'queue' ? 'Current queue' : 'Current playlist'),
+        source,
+        items: items.slice(0, 500)
       };
     } catch (error) {
       return { error: String(error) };
@@ -759,7 +907,9 @@ const state = {
     activeId: null,
     percent: 0,
     phase: '',
-    toolPercent: 0
+    toolPercent: 0,
+    batch: null,
+    lastFormat: 'mp3'
   },
   local: {
     item: null,
@@ -2643,7 +2793,8 @@ function renderDownloads() {
   const status = state.downloads.status;
   if (status && downloadsToolText) {
     if (status.ready) {
-      downloadsToolText.textContent = `yt-dlp ${status.version ? `v${status.version}` : ''} ready · ${status.count || 0} saved`;
+      const formatStatus = status.ffmpeg ? 'MP3 + MP4' : 'MP4 only';
+      downloadsToolText.textContent = `yt-dlp ${status.version ? `v${status.version}` : ''} ready · ${formatStatus} · ${status.count || 0} saved`;
       if (downloadsInstallBtn) downloadsInstallBtn.hidden = true;
     } else {
       downloadsToolText.textContent = status.installing
@@ -2754,7 +2905,177 @@ async function loadDownloads(refreshStatus) {
   }
 }
 
+let downloadFormatResolver = null;
+
+function closeDownloadMenu() {
+  if (!downloadMenu || downloadMenu.hidden) return;
+  downloadMenu.hidden = true;
+  const button = $('#btn-download-track');
+  if (button) button.setAttribute('aria-expanded', 'false');
+}
+
+function toggleDownloadMenu() {
+  if (!downloadMenu) return;
+  const opening = downloadMenu.hidden;
+  downloadMenu.hidden = !opening;
+  const button = $('#btn-download-track');
+  if (button) button.setAttribute('aria-expanded', String(opening));
+  if (opening) {
+    const first = downloadMenu.querySelector('button');
+    if (first) first.focus();
+  }
+}
+
+function formatLabel(format) {
+  return format === 'mp4' ? 'MP4' : 'MP3';
+}
+
+async function ensureDownloadStatus() {
+  if (state.downloads.status) return state.downloads.status;
+  try {
+    state.downloads.status = await desktop.downloads.getStatus();
+  } catch (error) {
+    state.downloads.status = null;
+  }
+  return state.downloads.status;
+}
+
+function resolveDownloadFormat(value) {
+  if (!downloadFormatResolver) return;
+  const resolve = downloadFormatResolver;
+  downloadFormatResolver = null;
+  if (downloadFormatModal) downloadFormatModal.hidden = true;
+  if (value === 'mp3' || value === 'mp4') {
+    state.downloads.lastFormat = value;
+  }
+  resolve(value);
+}
+
+async function chooseDownloadFormat(options = {}) {
+  if (!downloadFormatModal) return state.downloads.lastFormat || 'mp3';
+
+  await ensureDownloadStatus();
+  if (downloadFormatResolver) resolveDownloadFormat(null);
+
+  return new Promise((resolve) => {
+    downloadFormatResolver = resolve;
+    const kind = options.kind === 'playlist' ? 'playlist' : 'track';
+    const title = String(options.title || '').trim() || (kind === 'playlist' ? 'Current playlist' : 'Current track');
+    const count = Number(options.count) || 0;
+
+    if (downloadFormatTitle) {
+      downloadFormatTitle.textContent = kind === 'playlist' ? 'Download playlist' : 'Download track';
+    }
+    if (downloadFormatSub) {
+      downloadFormatSub.textContent = kind === 'playlist' && count
+        ? `${title} · ${count} track${count === 1 ? '' : 's'}`
+        : title;
+    }
+
+    const ffmpegReady = Boolean(state.downloads.status && state.downloads.status.ffmpeg);
+    const mp3Button = downloadFormatModal.querySelector('[data-format="mp3"]');
+    const mp4Button = downloadFormatModal.querySelector('[data-format="mp4"]');
+    if (mp3Button) {
+      mp3Button.disabled = !ffmpegReady;
+      mp3Button.title = ffmpegReady ? '' : 'FFmpeg is required for MP3 conversion';
+    }
+    if (mp4Button) mp4Button.disabled = false;
+
+    if (downloadFormatNote) {
+      downloadFormatNote.hidden = ffmpegReady;
+      downloadFormatNote.textContent = 'FFmpeg was not found. MP3 is unavailable, and MP4 will use a lower-quality progressive stream.';
+    }
+
+    downloadFormatModal.hidden = false;
+    const preferred = state.downloads.lastFormat === 'mp4' ? mp4Button : mp3Button;
+    const focusTarget = preferred && !preferred.disabled ? preferred : (mp4Button || mp3Button);
+    if (focusTarget) setTimeout(() => focusTarget.focus(), 0);
+  });
+}
+
+async function readPlaylistState() {
+  if (!state.guestReady) return null;
+  let timeoutId = null;
+  try {
+    return await Promise.race([
+      webview.executeJavaScript(PLAYLIST_STATE_JS, false),
+      new Promise((resolve, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('Playlist lookup timed out.')), 8000);
+      })
+    ]);
+  } catch (error) {
+    console.error('Could not read the current playlist:', error);
+    return null;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+async function downloadCurrentPlaylist() {
+  closeDownloadMenu();
+  if (!state.guestReady) {
+    toast('Open YouTube Music first.');
+    return;
+  }
+
+  const context = await readPlaylistState();
+  if (!context || context.error) {
+    toast('Could not read the current playlist. Try opening the playlist or queue first.', 7000);
+    return;
+  }
+
+  const items = Array.isArray(context.items) ? context.items : [];
+  if (!items.length) {
+    toast(context.playlistId
+      ? 'The playlist has not loaded yet. Open it and try again.'
+      : 'Play a playlist or add tracks to the queue first.', 7000);
+    return;
+  }
+
+  const title = String(context.title || '').trim()
+    || (context.source === 'queue' ? 'Current queue' : 'Current playlist');
+  const format = await chooseDownloadFormat({
+    kind: 'playlist',
+    title,
+    count: items.length
+  });
+  if (!format) return;
+
+  const result = await desktop.downloads.startMany({
+    items,
+    title,
+    format
+  }).catch((error) => ({ ok: false, error: 'ipc', message: error.message }));
+
+  if (!result || !result.ok) {
+    if (result && result.error === 'batch-running') {
+      toast('A playlist download is already running.', 7000);
+    } else if (result && result.error === 'tool-missing') {
+      openDrawer('downloads');
+      toast('Install yt-dlp first to save tracks offline.', 7000);
+    } else {
+      toast(result && result.message ? result.message : 'Could not start the playlist download.', 9000);
+    }
+    return;
+  }
+
+  if (result.empty) {
+    toast(`All ${items.length} track${items.length === 1 ? '' : 's'} are already saved offline.`, 7000);
+    return;
+  }
+
+  openDrawer('downloads');
+  const skipped = Number(result.skipped) || 0;
+  toast(
+    `Queued ${result.total} track${result.total === 1 ? '' : 's'} as ${formatLabel(format)}`
+      + (skipped ? ` · skipped ${skipped} already saved` : '') + '…',
+    8000
+  );
+  loadDownloads(true);
+}
+
 async function downloadCurrentTrack() {
+  closeDownloadMenu();
   const player = state.player;
   if (!player.videoId) {
     toast('Play a song first.');
@@ -2765,6 +3086,12 @@ async function downloadCurrentTrack() {
     return;
   }
 
+  const format = await chooseDownloadFormat({
+    kind: 'track',
+    title: player.artist ? `${player.artist} — ${player.title}` : player.title
+  });
+  if (!format) return;
+
   const result = await desktop.downloads.start({
     videoId: player.videoId,
     title: player.title,
@@ -2772,12 +3099,14 @@ async function downloadCurrentTrack() {
     album: player.album,
     artwork: player.artwork,
     duration: player.duration
-  }).catch((error) => ({ ok: false, error: 'ipc', message: error.message }));
+  }, { format }).catch((error) => ({ ok: false, error: 'ipc', message: error.message }));
 
   if (!result || !result.ok) {
     if (result && result.error === 'tool-missing') {
       openDrawer('downloads');
       toast('Install yt-dlp first to save tracks offline.', 7000);
+    } else if (result && result.error === 'ffmpeg-missing') {
+      toast(result.message || 'MP3 downloads require FFmpeg.', 9000);
     } else if (result && result.error === 'duplicate') {
       toast('This track is already saved offline.');
     } else if (result && result.error === 'already-running') {
@@ -2789,8 +3118,8 @@ async function downloadCurrentTrack() {
   }
 
   state.downloads.activeId = result.id;
-  setDownloadProgress(0, `Starting download: ${player.title}`);
-  toast(`Downloading “${player.title}”…`);
+  setDownloadProgress(0, `Starting ${formatLabel(format)} download: ${player.title}`);
+  toast(`Downloading ${formatLabel(format)} · “${player.title}”…`, 6000);
   loadDownloads(true);
 }
 
@@ -2884,33 +3213,131 @@ function toggleLocalPlayback() {
 
 function bindDownloads() {
   const trackBtn = $('#btn-download-track');
-  if (trackBtn) trackBtn.addEventListener('click', () => downloadCurrentTrack());
+  if (trackBtn) {
+    trackBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      toggleDownloadMenu();
+    });
+  }
+  if (downloadMenuTrack) {
+    downloadMenuTrack.addEventListener('click', () => {
+      closeDownloadMenu();
+      downloadCurrentTrack();
+    });
+  }
+  if (downloadMenuPlaylist) {
+    downloadMenuPlaylist.addEventListener('click', () => {
+      closeDownloadMenu();
+      downloadCurrentPlaylist();
+    });
+  }
   const currentBtn = $('#btn-download-current');
   if (currentBtn) currentBtn.addEventListener('click', () => downloadCurrentTrack());
+  if (downloadsPlaylistBtn) downloadsPlaylistBtn.addEventListener('click', () => downloadCurrentPlaylist());
   if (downloadsInstallBtn) downloadsInstallBtn.addEventListener('click', () => installYtDlp());
   const folderBtn = $('#btn-downloads-folder');
   if (folderBtn) folderBtn.addEventListener('click', () => desktop.downloads.openFolder().catch(() => {}));
 
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.download-menu-wrap')) closeDownloadMenu();
+  });
+
+  if (downloadFormatModal) {
+    downloadFormatModal.addEventListener('click', (event) => {
+      const option = event.target.closest('.download-format-option');
+      if (option && !option.disabled) {
+        resolveDownloadFormat(option.dataset.format);
+        return;
+      }
+      if (event.target === downloadFormatCancel || event.target.id === 'download-format-backdrop') {
+        resolveDownloadFormat(null);
+      }
+    });
+  }
+
   desktop.downloads.onEvent((event) => {
     if (!event) return;
+
+    if (event.type === 'batch-start') {
+      state.downloads.batch = {
+        id: event.id,
+        title: event.title,
+        total: event.total,
+        completed: 0,
+        saved: 0,
+        failed: 0,
+        skipped: event.skipped || 0,
+        currentTitle: ''
+      };
+      setDownloadProgress(0, `Starting playlist: ${event.title}`);
+      return;
+    }
+
+    if (event.type === 'batch-progress') {
+      state.downloads.batch = { ...event };
+      const total = Number(event.total) || 0;
+      const completed = Number(event.completed) || 0;
+      const current = event.currentTitle ? ` · ${event.currentTitle}` : '';
+      const percent = total ? Math.min(99, (completed / total) * 100) : 0;
+      setDownloadProgress(percent, `${event.title}: ${completed}/${total} tracks${current}`);
+      return;
+    }
+
+    if (event.type === 'batch-complete') {
+      state.downloads.batch = null;
+      state.downloads.activeId = null;
+      setDownloadProgress(-1);
+      const details = [`Saved ${event.saved} of ${event.total}`];
+      if (event.failed) details.push(`${event.failed} failed`);
+      if (event.skipped) details.push(`${event.skipped} skipped`);
+      toast(`${details.join(' · ')} from “${event.title}”.`, 8000);
+      loadDownloads(true);
+      return;
+    }
+
+    if (event.type === 'batch-error') {
+      state.downloads.batch = null;
+      state.downloads.activeId = null;
+      setDownloadProgress(-1);
+      toast(event.message || 'The playlist download stopped.', 9000);
+      loadDownloads(true);
+      return;
+    }
+
     if (event.type === 'start') {
       state.downloads.activeId = event.id;
-      setDownloadProgress(0, `Downloading ${event.title || 'track'}…`);
+      if (!event.batchId) {
+        setDownloadProgress(0, `Downloading ${event.title || 'track'}…`);
+      }
     } else if (event.type === 'progress') {
-      if (event.id === state.downloads.activeId) {
+      if (event.batchId) {
+        const currentBatch = state.downloads.batch;
+        if (currentBatch && currentBatch.id === event.batchId) {
+          const total = Number(currentBatch.total) || 0;
+          const completed = Number(currentBatch.completed) || 0;
+          const percent = total
+            ? Math.min(99, ((completed + (Number(event.percent) || 0) / 100) / total) * 100)
+            : 0;
+          const current = currentBatch.currentTitle ? ` · ${currentBatch.currentTitle}` : '';
+          setDownloadProgress(percent, `${currentBatch.title}: ${completed}/${total} tracks${current}`);
+        }
+      } else if (event.id === state.downloads.activeId) {
         setDownloadProgress(event.percent, event.phase || `Downloading… ${Math.round(event.percent)}%`);
       }
     } else if (event.type === 'complete') {
+      if (event.batchId) return;
       state.downloads.activeId = null;
       setDownloadProgress(-1);
       toast(`Saved “${event.item && event.item.title ? event.item.title : 'track'}” offline.`, 6000);
       loadDownloads(true);
     } else if (event.type === 'error') {
+      if (event.batchId) return;
       state.downloads.activeId = null;
       setDownloadProgress(-1);
       toast(event.message || 'Download failed.', 9000);
       loadDownloads(true);
     } else if (event.type === 'cancelled') {
+      if (event.batchId) return;
       state.downloads.activeId = null;
       setDownloadProgress(-1);
     } else if (event.type === 'tool-progress') {
@@ -3188,10 +3615,22 @@ function bindKeyboard() {
     const target = event.target;
     const typing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT');
 
-    if (event.key === 'Escape' && state.drawer) {
-      event.preventDefault();
-      closeDrawer();
-      return;
+    if (event.key === 'Escape') {
+      if (downloadFormatResolver) {
+        event.preventDefault();
+        resolveDownloadFormat(null);
+        return;
+      }
+      if (downloadMenu && !downloadMenu.hidden) {
+        event.preventDefault();
+        closeDownloadMenu();
+        return;
+      }
+      if (state.drawer) {
+        event.preventDefault();
+        closeDrawer();
+        return;
+      }
     }
 
     if (event.ctrlKey && !event.altKey) {

@@ -15,7 +15,7 @@ It uses the official YouTube Music web player inside a desktop shell, so your pl
 - **No "Still watching?" interruptions** — automatically dismisses YouTube's “Still watching?” / “Video paused” prompt and resumes playback. Toggle it under **Settings → Playback**.
 - **SponsorBlock** — skips community-submitted sponsor reads, intros, outros, and non-music sections using the public SponsorBlock database.
 - **Playback extras** — speed control (0.5×–2×), fade transitions, and automatic volume normalization.
-- **Offline downloads** — save the current track for offline listening with yt-dlp, then play it inside the app from the **Offline** panel.
+- **Offline downloads** — save the current track or playlist as MP3/MP4 with yt-dlp, then play downloaded tracks inside the app from the **Offline** panel.
 - **Automatic updates** — installed builds check for updates on startup and every six hours.
 - **Lyrics panel** — time-synced lyrics from [LRCLIB](https://lrclib.net), with plain-text fallback and a button to open YouTube Music's own lyrics.
 - **10-band equalizer** — presets, preamp, and custom bands applied live through Web Audio.
@@ -109,14 +109,18 @@ Segments come from the public <https://sponsor.ajay.app> database and are cached
 
 ## Offline downloads
 
-Open the **Offline** drawer tab (or press the download icon in the title bar / `Ctrl+Shift+D`) to save the current track. Downloads require [yt-dlp](https://github.com/yt-dlp/yt-dlp):
+Open the **Offline** drawer tab, use the download menu in the title bar, or press `Ctrl+Shift+D` to save music. Downloads require [yt-dlp](https://github.com/yt-dlp/yt-dlp):
 
 1. Click **Install yt-dlp** in the Offline panel to fetch `yt-dlp.exe` into the app's data folder.
 2. Alternatively, put `yt-dlp.exe` on your `PATH` or set `YTMD_YTDLP_PATH` to its location.
-3. Click **Download current track**. Progress appears in the panel.
+3. Choose **Current track** or **Current playlist**, then pick **MP3** or **MP4**.
 4. Play downloaded tracks with the play button. The app pauses YouTube playback and shows a small offline player bar over the page.
 
-Files are stored in the app's downloads folder (use the folder button in the Offline panel to open it). yt-dlp downloads the best available audio stream; no format conversion or ffmpeg installation is required. Downloads continue while the app is in the tray, and cancelled or failed downloads are cleaned up.
+Each download is saved as `Artist - Title.ext`, so the file name matches the track. Playlist downloads run one track at a time, skip tracks that are already saved, and show aggregate progress in the Offline panel.
+
+**MP3 conversion requires FFmpeg** and will be unavailable if the app cannot find it. **MP4** uses FFmpeg for the best video/audio merge when available; without FFmpeg it falls back to a lower-quality progressive MP4. Put `ffmpeg.exe` on your `PATH`, in the app's `tools` folder, or point `YTMD_FFMPEG_PATH` to it.
+
+Files are stored in the app's downloads folder (use the folder button in the Offline panel to open it). Downloads continue while the app is in the tray, and cancelled or failed downloads are cleaned up.
 
 > Offline downloading may conflict with YouTube's Terms of Service and the rights of content owners. Use it only for content you are allowed to save, and at your own discretion.
 
@@ -179,7 +183,7 @@ src/main/main.js             Electron main process, windows, tray, IPC
 src/main/watchdog.js         Detached process watchdog for main-process hangs
 src/main/browser-auth.js     Browser-based Google sign-in and cookie import
 src/main/config.js           JSON settings store
-src/main/downloads.js        yt-dlp detection, verified downloads, index
+src/main/downloads.js        yt-dlp/FFmpeg detection, MP3/MP4 and playlist downloads
 src/main/sponsorblock.js     SponsorBlock segment lookup and cache
 src/main/updater.js          electron-updater integration
 src/main/lyrics.js           LRCLIB lookup, matching, and cache
@@ -236,6 +240,9 @@ In Discord, open **User Settings → Activity Privacy** and enable **Display cur
 
 **Offline downloads say yt-dlp is required**  
 Open the **Offline** panel and click **Install yt-dlp**, or install it separately and make sure `yt-dlp --version` works in a terminal. If you prefer a custom location, set the `YTMD_YTDLP_PATH` environment variable to the executable before starting the app.
+
+**MP3 is disabled in the download dialog**  
+MP3 conversion needs FFmpeg. Install FFmpeg and make sure `ffmpeg -version` works in a terminal, or set `YTMD_FFMPEG_PATH` to the executable. MP4 downloads still work without FFmpeg but use a lower-quality progressive stream.
 
 **A download fails immediately**  
 YouTube sometimes rejects requests from yt-dlp until it updates. Try again, or update `yt-dlp.exe` from its GitHub releases page. The last yt-dlp error message is shown in a toast and printed to the log.

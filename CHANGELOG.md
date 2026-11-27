@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+
+- Choose **MP3** (audio) or **MP4** (video) before every download.
+- Download the **current track** or the **current playlist/queue** from the title-bar download menu or the Offline panel.
+- Playlist downloads run sequentially, skip tracks that are already saved, and show aggregate progress.
+
+### Fixed
+
+- Downloaded files are named `Artist - Title.ext` instead of the YouTube video ID, with safe Windows filename handling and duplicate-name suffixes.
+
+### Notes
+
+- MP3 requires FFmpeg. MP4 uses FFmpeg for high-quality merging when available and falls back to a progressive MP4 without it.
+
 ## 1.1.1
 
 ### Fixed

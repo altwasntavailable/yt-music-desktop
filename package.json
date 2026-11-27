@@ -1,6 +1,6 @@
 {
   "name": "yt-music-desktop",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "An unofficial, audio-first YouTube Music desktop player with lyrics, equalizer, SponsorBlock, offline downloads, Discord Rich Presence, and a system tray.",
   "main": "src/main/main.js",
   "author": "ALT (altwasntavailable)",

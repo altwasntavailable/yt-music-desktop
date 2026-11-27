@@ -768,7 +768,7 @@ function setupMediaProtocol() {
       const stat = fs.statSync(file);
       const mime = {
         m4a: 'audio/mp4',
-        mp4: 'audio/mp4',
+        mp4: 'video/mp4',
         aac: 'audio/aac',
         mp3: 'audio/mpeg',
         webm: 'audio/webm',
@@ -1329,7 +1329,8 @@ function registerIpc() {
 
   ipcMain.handle('downloads:status', () => downloads.getStatus());
   ipcMain.handle('downloads:install-tool', () => downloads.installTool());
-  ipcMain.handle('downloads:start', (event, meta) => downloads.start(meta));
+  ipcMain.handle('downloads:start', (event, meta, options) => downloads.start(meta, options || {}));
+  ipcMain.handle('downloads:start-many', (event, payload) => downloads.startMany(payload || {}));
   ipcMain.handle('downloads:list', () => downloads.list());
   ipcMain.handle('downloads:cancel', (event, id) => downloads.cancel(id));
   ipcMain.handle('downloads:remove', (event, id) => downloads.remove(id));

@@ -53,7 +53,8 @@ contextBridge.exposeInMainWorld('desktop', {
   downloads: {
     getStatus: () => ipcRenderer.invoke('downloads:status'),
     installTool: () => ipcRenderer.invoke('downloads:install-tool'),
-    start: (meta) => ipcRenderer.invoke('downloads:start', meta),
+    start: (meta, options) => ipcRenderer.invoke('downloads:start', meta, options || {}),
+    startMany: (payload) => ipcRenderer.invoke('downloads:start-many', payload || {}),
     list: () => ipcRenderer.invoke('downloads:list'),
     cancel: (id) => ipcRenderer.invoke('downloads:cancel', id),
     remove: (id) => ipcRenderer.invoke('downloads:remove', id),
