@@ -1,0 +1,83 @@
+{
+  "name": "yt-music-desktop",
+  "version": "1.1.1",
+  "description": "An unofficial, audio-first YouTube Music desktop player with lyrics, equalizer, SponsorBlock, offline downloads, Discord Rich Presence, and a system tray.",
+  "main": "src/main/main.js",
+  "author": "ALT (altwasntavailable)",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/altwasntavailable/yt-music-desktop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/altwasntavailable/yt-music-desktop/issues"
+  },
+  "homepage": "https://github.com/altwasntavailable/yt-music-desktop#readme",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "icons": "node scripts/generate-icons.js",
+    "pack": "npm run icons && electron-builder --dir",
+    "dist": "npm run icons && electron-builder --win nsis"
+  },
+  "dependencies": {
+    "discord-rpc": "^4.0.1",
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "pngjs": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.ytmusicdesktop.app",
+    "productName": "YT Music Desktop",
+    "copyright": "Unofficial desktop client. Not affiliated with YouTube or Google.",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "LICENSE",
+      "PRIVACY.md",
+      "SECURITY.md",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "artifactName": "YT-Music-Desktop-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "YT Music",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false
+    },
+    "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "altwasntavailable",
+        "repo": "yt-music-desktop"
+      }
+    ]
+  }
+}

@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: ytmd-media:; font-src 'self' data:; connect-src 'self'; media-src 'self' ytmd-media:;">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YT Music Desktop</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></symbol>
+    <symbol id="i-lyrics" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 10.5h10M4 15h16M4 19.5h7"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-6M4 11V3M12 21v-9M12 8V3M20 21v-4M20 13V3"/><path d="M1.5 15h5M9.5 8h5M17.5 17h5"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-min" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></symbol>
+    <symbol id="i-max" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="1"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="8" y="8" width="11" height="11" rx="1"/><path d="M5 16V5h11"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M4 21h16"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3.2v14H7zM13.8 5H17v14h-3.2z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/><path d="M10 11v5M14 11v5"/></symbol>
+  </svg>
+
+  <div id="app">
+    <header id="titlebar">
+      <div class="brand" title="YT Music Desktop">
+        <span class="brand-logo"><svg class="brand-play"><use href="#i-play"></use></svg></span>
+        <span class="brand-name">YT Music</span>
+      </div>
+
+      <div class="now-playing" id="now-playing">
+        <span class="np-title" id="np-title" dir="auto">YouTube Music</span>
+        <span class="np-dot" id="np-dot" hidden>•</span>
+        <span class="np-artist" id="np-artist" dir="auto"></span>
+      </div>
+
+      <div class="titlebar-actions">
+        <button class="icon-btn" id="btn-download-track" title="Download current track" aria-label="Download current track">
+          <svg class="icon"><use href="#i-download"></use></svg>
+        </button>
+        <button class="icon-btn" id="btn-lyrics" data-drawer="lyrics" title="Lyrics (Ctrl+L)" aria-label="Lyrics">
+          <svg class="icon"><use href="#i-lyrics"></use></svg>
+        </button>
+        <button class="icon-btn" id="btn-eq" data-drawer="eq" title="Equalizer (Ctrl+E)" aria-label="Equalizer">
+          <svg class="icon"><use href="#i-sliders"></use></svg>
+        </button>
+        <button class="icon-btn" id="btn-settings" data-drawer="settings" title="Settings (Ctrl+,)" aria-label="Settings">
+          <svg class="icon"><use href="#i-settings"></use></svg>
+        </button>
+        <div class="window-controls">
+          <button class="window-btn" id="win-min" title="Minimize" aria-label="Minimize">
+            <svg class="icon"><use href="#i-min"></use></svg>
+          </button>
+          <button class="window-btn" id="win-max" title="Maximize" aria-label="Maximize">
+            <svg class="icon" id="win-max-icon"><use href="#i-max"></use></svg>
+          </button>
+          <button class="window-btn close" id="win-close" title="Close to tray" aria-label="Close">
+            <svg class="icon"><use href="#i-close"></use></svg>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="content">
+      <section id="webview-wrap">
+        <webview id="ytmusic" partition="persist:ytmusic" allowpopups webpreferences="contextIsolation=yes,nodeIntegration=no,backgroundThrottling=no"></webview>
+
+        <div id="progress"></div>
+
+        <div id="loading">
+          <div class="loading-logo"><svg><use href="#i-play"></use></svg></div>
+          <div class="spinner"></div>
+          <div class="loading-title">Opening YouTube Music</div>
+          <div class="loading-sub">Sign in with Google to load your playlists and liked songs.</div>
+        </div>
+
+        <div id="local-player" class="local-player" hidden>
+          <div class="lp-art-wrap">
+            <img id="lp-art" class="lp-art" alt="" hidden>
+            <div class="lp-art-fallback" id="lp-art-fallback"><svg class="icon"><use href="#i-music"></use></svg></div>
+          </div>
+          <div class="lp-info">
+            <div class="lp-title" id="lp-title" dir="auto">Offline track</div>
+            <div class="lp-artist" id="lp-artist" dir="auto">Playing from downloads</div>
+          </div>
+          <div class="lp-controls">
+            <button class="lp-btn" id="lp-play" title="Play/Pause" aria-label="Play or pause">
+              <svg class="icon" id="lp-play-icon"><use href="#i-pause"></use></svg>
+            </button>
+            <button class="lp-btn" id="lp-close" title="Close offline player" aria-label="Close offline player">
+              <svg class="icon"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+          <div class="lp-seek">
+            <span id="lp-current">0:00</span>
+            <input type="range" id="lp-seek" min="0" max="1000" step="1" value="0" aria-label="Seek">
+            <span id="lp-duration">0:00</span>
+          </div>
+          <audio id="local-audio" preload="metadata"></audio>
+        </div>
+
+        <div id="error">
+          <svg class="error-icon"><use href="#i-alert"></use></svg>
+          <div class="error-title">Couldn't load YouTube Music</div>
+          <div class="error-msg" id="error-msg">Check your internet connection and try again.</div>
+          <div class="error-actions">
+            <button class="btn primary" id="btn-retry"><svg class="icon"><use href="#i-refresh"></use></svg>Try again</button>
+            <button class="btn ghost" id="btn-open-browser">Open in browser</button>
+          </div>
+        </div>
+      </section>
+
+      <aside id="drawer" aria-hidden="true">
+        <div id="drawer-inner">
+          <div class="drawer-tabs">
+            <button class="drawer-tab" data-drawer="lyrics">
+              <svg class="icon"><use href="#i-lyrics"></use></svg><span>Lyrics</span>
+            </button>
+            <button class="drawer-tab" data-drawer="eq">
+              <svg class="icon"><use href="#i-sliders"></use></svg><span>Equalizer</span>
+            </button>
+            <button class="drawer-tab" data-drawer="downloads">
+              <svg class="icon"><use href="#i-download"></use></svg><span>Offline</span>
+            </button>
+            <button class="drawer-tab" data-drawer="settings">
+              <svg class="icon"><use href="#i-settings"></use></svg><span>Settings</span>
+            </button>
+            <button class="drawer-close icon-btn" id="drawer-close" title="Close panel" aria-label="Close panel">
+              <svg class="icon"><use href="#i-close"></use></svg>
+            </button>
+          </div>
+
+          <section class="drawer-panel" id="panel-lyrics">
+            <div class="lyrics-head">
+              <div class="lyrics-art-wrap">
+                <img id="lyrics-art" class="lyrics-art" alt="" hidden>
+                <div class="lyrics-art-placeholder" id="lyrics-art-placeholder">
+                  <svg class="icon"><use href="#i-music"></use></svg>
+                </div>
+              </div>
+              <div class="lyrics-track">
+                <div class="lyrics-title" id="lyrics-title" dir="auto">Nothing playing</div>
+                <div class="lyrics-artist" id="lyrics-artist" dir="auto">Play a song to see lyrics</div>
+              </div>
+            </div>
+
+            <div class="lyrics-toolbar">
+              <span class="badge" id="lyrics-badge">LRCLIB</span>
+              <span class="toolbar-spacer"></span>
+              <div class="offset-group" id="offset-group" hidden>
+                <button class="offset-btn" id="offset-minus" title="Show lyrics 0.5s earlier">−0.5s</button>
+                <span class="offset-value" id="offset-value">0.0s</span>
+                <button class="offset-btn" id="offset-plus" title="Show lyrics 0.5s later">+0.5s</button>
+              </div>
+            </div>
+
+            <div class="lyrics-scroll" id="lyrics-scroll">
+              <div id="lyrics-content"></div>
+              <div class="lyrics-state" id="lyrics-state">
+                <svg class="lyrics-state-icon"><use href="#i-music"></use></svg>
+                <div class="lyrics-state-title" id="lyrics-state-title">Play a song</div>
+                <div class="lyrics-state-sub" id="lyrics-state-sub">Lyrics will appear here.</div>
+              </div>
+            </div>
+
+            <div class="lyrics-foot">
+              <span class="lyrics-source" id="lyrics-source">Synced lyrics by LRCLIB</span>
+              <button class="btn ghost small" id="btn-ytm-lyrics">YT Music lyrics</button>
+              <button class="btn ghost small" id="btn-search-lyrics">Search</button>
+            </div>
+          </section>
+
+          <section class="drawer-panel" id="panel-eq">
+            <div class="eq-head">
+              <div>
+                <div class="panel-title">Equalizer</div>
+                <div class="panel-sub">10-band audio shaping</div>
+              </div>
+              <label class="switch" title="Enable equalizer">
+                <input type="checkbox" id="eq-enabled"><span></span>
+              </label>
+            </div>
+
+            <div class="eq-body">
+              <div class="eq-preset-row">
+                <label for="eq-preset">Preset</label>
+                <select id="eq-preset" class="select">
+                  <option value="Flat">Flat</option>
+                  <option value="Bass Boost">Bass Boost</option>
+                  <option value="Bass &amp; Treble">Bass &amp; Treble</option>
+                  <option value="Vocal">Vocal</option>
+                  <option value="Rock">Rock</option>
+                  <option value="Pop">Pop</option>
+                  <option value="Jazz">Jazz</option>
+                  <option value="Classical">Classical</option>
+                  <option value="Electronic">Electronic</option>
+                  <option value="Treble Boost">Treble Boost</option>
+                  <option value="Custom">Custom</option>
+                </select>
+              </div>
+
+              <div class="eq-sliders" id="eq-sliders">
+                <div class="eq-band"><input class="vertical" type="range" data-band="0" min="-12" max="12" step="0.5" value="0" aria-label="31 Hz"><span class="eq-val" data-band-val="0">0</span><label>31</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="1" min="-12" max="12" step="0.5" value="0" aria-label="62 Hz"><span class="eq-val" data-band-val="1">0</span><label>62</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="2" min="-12" max="12" step="0.5" value="0" aria-label="125 Hz"><span class="eq-val" data-band-val="2">0</span><label>125</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="3" min="-12" max="12" step="0.5" value="0" aria-label="250 Hz"><span class="eq-val" data-band-val="3">0</span><label>250</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="4" min="-12" max="12" step="0.5" value="0" aria-label="500 Hz"><span class="eq-val" data-band-val="4">0</span><label>500</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="5" min="-12" max="12" step="0.5" value="0" aria-label="1 kHz"><span class="eq-val" data-band-val="5">0</span><label>1k</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="6" min="-12" max="12" step="0.5" value="0" aria-label="2 kHz"><span class="eq-val" data-band-val="6">0</span><label>2k</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="7" min="-12" max="12" step="0.5" value="0" aria-label="4 kHz"><span class="eq-val" data-band-val="7">0</span><label>4k</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="8" min="-12" max="12" step="0.5" value="0" aria-label="8 kHz"><span class="eq-val" data-band-val="8">0</span><label>8k</label></div>
+                <div class="eq-band"><input class="vertical" type="range" data-band="9" min="-12" max="12" step="0.5" value="0" aria-label="16 kHz"><span class="eq-val" data-band-val="9">0</span><label>16k</label></div>
+              </div>
+
+              <div class="eq-preamp">
+                <div class="eq-row-label"><span>Preamp</span><span id="eq-preamp-value">0.0 dB</span></div>
+                <input type="range" id="eq-preamp" min="-12" max="12" step="0.5" value="0">
+              </div>
+
+              <div class="eq-note">The equalizer is applied to the player audio in real time. If audio ever stops after enabling it, use “Reload page”.</div>
+
+              <div class="eq-actions">
+                <button class="btn ghost" id="eq-reset">Reset</button>
+                <button class="btn ghost" id="eq-reload">Reload page</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="drawer-panel" id="panel-downloads">
+            <div class="downloads-head">
+              <div>
+                <div class="panel-title">Offline</div>
+                <div class="panel-sub">Downloaded tracks play without YouTube</div>
+              </div>
+              <button class="icon-btn" id="btn-downloads-folder" title="Open downloads folder" aria-label="Open downloads folder">
+                <svg class="icon"><use href="#i-folder"></use></svg>
+              </button>
+            </div>
+
+            <div class="downloads-body">
+              <div class="downloads-tool" id="downloads-tool">
+                <div class="downloads-tool-text" id="downloads-tool-text">Checking for yt-dlp…</div>
+                <button class="btn small" id="btn-downloads-install" hidden>Install yt-dlp</button>
+              </div>
+
+              <button class="btn primary wide" id="btn-download-current">
+                <svg class="icon"><use href="#i-download"></use></svg>Download current track
+              </button>
+
+              <div class="downloads-progress" id="downloads-progress" hidden>
+                <div class="downloads-progress-bar"><span id="downloads-progress-fill"></span></div>
+                <div class="downloads-progress-text" id="downloads-progress-text"></div>
+              </div>
+
+              <div class="downloads-list" id="downloads-list"></div>
+              <div class="downloads-empty" id="downloads-empty">
+                <svg class="icon"><use href="#i-download"></use></svg>
+                <div>No offline tracks yet.</div>
+                <div class="downloads-empty-sub">Download the song that is playing to listen without a connection.</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="drawer-panel" id="panel-settings">
+            <div class="settings-scroll">
+              <div class="settings-hero">
+                <div class="panel-title">Settings</div>
+                <div class="panel-sub">Make it yours</div>
+              </div>
+
+              <div class="setting-section">
+                <h3>Playback</h3>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Audio-only mode</div>
+                    <div class="setting-desc">Hide video and keep the album artwork visible.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-audio-only"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Block ads</div>
+                    <div class="setting-desc">Skip ads and hide ad overlays. Some ads may still slip through.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-block-ads"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Skip "Still watching?" prompt</div>
+                    <div class="setting-desc">Automatically dismiss YouTube's "Still watching?" / "Video paused" popup and keep the music going.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-skip-still-watching"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Playback speed</div>
+                    <div class="setting-desc">Slow down or speed up the current track.</div>
+                  </div>
+                  <select class="select compact" id="set-playback-speed" aria-label="Playback speed">
+                    <option value="0.5">0.5×</option>
+                    <option value="0.75">0.75×</option>
+                    <option value="1">1×</option>
+                    <option value="1.25">1.25×</option>
+                    <option value="1.5">1.5×</option>
+                    <option value="1.75">1.75×</option>
+                    <option value="2">2×</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Fade in / out</div>
+                    <div class="setting-desc">Smooth volume fades when playback starts, pauses, or tracks change.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-fade-transitions"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Volume normalization</div>
+                    <div class="setting-desc">Even out loud and quiet songs automatically. It uses the same audio graph as the equalizer.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-normalize-volume"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Prevent sleep while playing</div>
+                    <div class="setting-desc">Keep your PC awake during playback.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-prevent-sleep"><span></span></label>
+                </div>
+              </div>
+
+              <div class="setting-section">
+                <h3>SponsorBlock</h3>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Skip community-marked segments</div>
+                    <div class="setting-desc">Uses the public SponsorBlock database to jump over sponsor reads and non-music sections.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-sponsorblock"><span></span></label>
+                </div>
+                <details class="discord-box sb-box" id="sb-box">
+                  <summary>Categories to skip</summary>
+                  <label class="check-row"><input type="checkbox" data-sb-category="sponsor"><span>Sponsor spots</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="selfpromo"><span>Self promotion</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="interaction"><span>Like / subscribe reminders</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="intro"><span>Intros</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="outro"><span>Outros / end cards</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="preview"><span>Previews / recaps</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="music_offtopic"><span>Non-music talk</span></label>
+                  <label class="check-row"><input type="checkbox" data-sb-category="filler"><span>Filler / tangential scenes</span></label>
+                  <div class="help-text">Segments are submitted by the community and may occasionally be wrong. Skipping only affects videos.</div>
+                </details>
+              </div>
+
+              <div class="setting-section">
+                <h3>Window</h3>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Close to tray</div>
+                    <div class="setting-desc">Keep music playing when the window is closed.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-close-to-tray"><span></span></label>
+                </div>
+              </div>
+
+              <div class="setting-section">
+                <h3>Discord Rich Presence</h3>
+                <div class="discord-connect">
+                  <div class="discord-copy">
+                    <div class="setting-label">Show what I'm listening to</div>
+                    <div class="setting-desc">Put the current song on your Discord profile. Discord must be running.</div>
+                  </div>
+                  <button class="btn primary" id="btn-discord-connect">Connect to Discord</button>
+                </div>
+                <div class="status discord-status">
+                  <span class="status-dot" id="discord-dot"></span>
+                  <span id="discord-status">Not connected</span>
+                  <button class="link-btn" id="btn-discord-retry" hidden>Try again</button>
+                </div>
+                <details class="discord-box discord-advanced">
+                  <summary>Advanced</summary>
+                  <label class="check-row">
+                    <input type="checkbox" id="set-discord-custom">
+                    <span>Use my own Discord Application ID</span>
+                  </label>
+                  <div class="input-row">
+                    <input class="input" id="set-discord-id" placeholder="17–20 digit Application ID" autocomplete="off" spellcheck="false" disabled>
+                    <button class="btn small" id="set-discord-save" disabled>Save</button>
+                  </div>
+                  <div class="help-text">Optional. Create an app at <button class="link-btn" id="btn-discord-portal">discord.com/developers/applications</button> if you want a custom name or icon.</div>
+                </details>
+              </div>
+
+              <div class="setting-section">
+                <h3>Account</h3>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Sign in with browser</div>
+                    <div class="setting-desc">Opens Chrome or Edge for Google sign-in, then imports the session into the app.</div>
+                  </div>
+                  <button class="btn small" id="btn-browser-signin">Sign in</button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">YouTube Music account</div>
+                    <div class="setting-desc">Sign out and clear this app's session.</div>
+                  </div>
+                  <button class="btn danger small" id="btn-signout"><svg class="icon"><use href="#i-logout"></use></svg>Sign out</button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Open in browser</div>
+                    <div class="setting-desc">Open music.youtube.com in your default browser.</div>
+                  </div>
+                  <button class="btn small" id="btn-open-ytm"><svg class="icon"><use href="#i-external"></use></svg>Open</button>
+                </div>
+              </div>
+
+              <div class="setting-section about">
+                <h3>About</h3>
+                <div class="about-title">YT Music Desktop <span id="app-version"></span></div>
+                <div class="about-text">An unofficial, audio-first YouTube Music desktop player. Not affiliated with YouTube or Google. Music is streamed through the official player; optional offline copies are created on this device with yt-dlp and never uploaded.</div>
+                <div class="about-meta" id="app-meta"></div>
+                <div class="setting-row update-row">
+                  <div>
+                    <div class="setting-label">Updates</div>
+                    <div class="setting-desc" id="update-status">Check for a newer version.</div>
+                  </div>
+                  <button class="btn small" id="btn-check-updates">Check</button>
+                </div>
+                <button class="btn primary wide" id="btn-install-update" hidden>Restart &amp; install update</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>
