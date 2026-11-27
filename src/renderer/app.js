@@ -57,6 +57,7 @@ const downloadsEmpty = $('#downloads-empty');
 const downloadsTool = $('#downloads-tool');
 const downloadsToolText = $('#downloads-tool-text');
 const downloadsInstallBtn = $('#btn-downloads-install');
+const downloadsLastError = $('#downloads-last-error');
 const downloadsProgress = $('#downloads-progress');
 const downloadsProgressFill = $('#downloads-progress-fill');
 const downloadsProgressText = $('#downloads-progress-text');
@@ -2806,6 +2807,12 @@ function renderDownloads() {
         downloadsInstallBtn.disabled = Boolean(status.installing);
       }
     }
+  }
+
+  if (downloadsLastError) {
+    const lastError = status && status.lastError;
+    downloadsLastError.hidden = !lastError;
+    downloadsLastError.textContent = lastError ? `Last error: ${lastError.message}` : '';
   }
 
   if (!downloadsList) return;

@@ -27,6 +27,7 @@ let ffmpegPromise = null;
 let installing = false;
 let batch = null;
 let batchCounter = 0;
+let lastError = null;
 
 function emit(payload) {
   try {
@@ -122,6 +123,57 @@ function init(handler) {
   readIndex();
 }
 
+function logPath() {
+  return path.join(downloadDir(), 'downloads.log');
+}
+
+function appendLog(line) {
+  try {
+    const file = logPath();
+    fs.mkdirSync(downloadDir(), { recursive: true });
+    try {
+      if (fs.statSync(file).size > 1024 * 1024) {
+        fs.renameSync(file, `${file}.1`);
+      }
+    } catch (error) {}
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`, 'utf8');
+  } catch (error) {}
+}
+
+function recordError(message, meta = {}) {
+  const text = String(message || '').trim() || 'Unknown download error.';
+  const title = String(meta.title || '').replace(/\s+/g, ' ').trim().slice(0, 150);
+  lastError = { message: text, title, at: Date.now() };
+  appendLog(`${title ? `[${title}] ` : ''}${text}`);
+  return lastError;
+}
+
+function resolveOnPath(name) {
+  const dirs = String(process.env.PATH || '').split(path.delimiter);
+  const extensions = process.platform === 'win32'
+    ? String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+    : [''];
+
+  for (const dir of dirs) {
+    const clean = String(dir || '').trim().replace(/^"(.*)"$/, '$1');
+    if (!clean) continue;
+    for (const extension of extensions) {
+      const file = path.join(clean, `${name}${path.extname(name) ? '' : extension}`);
+      try {
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) return file;
+      } catch (error) {}
+    }
+  }
+  return '';
+}
+
+function resolveToolCandidate(candidate) {
+  if (!candidate) return '';
+  if (path.isAbsolute(candidate)) return candidate;
+  if (candidate.includes('/') || candidate.includes('\\')) return path.resolve(candidate);
+  return resolveOnPath(candidate);
+}
+
 async function probeTool(force = false) {
   if (!force && probeCache.at && Date.now() - probeCache.at < PROBE_CACHE_MS) {
     return probeCache.tool;
@@ -142,15 +194,17 @@ async function probeTool(force = false) {
 
     let tool = null;
     for (const candidate of candidates) {
+      const resolved = resolveToolCandidate(candidate);
+      if (!resolved) continue;
       try {
-        const { stdout } = await execFileAsync(candidate, ['--version'], {
+        const { stdout } = await execFileAsync(resolved, ['--version'], {
           windowsHide: true,
           timeout: 5000,
           encoding: 'utf8'
         });
         const version = String(stdout || '').trim().split(/\r?\n/)[0];
         if (version) {
-          tool = { path: candidate, version };
+          tool = { path: resolved, version };
           break;
         }
       } catch (error) {
@@ -189,15 +243,17 @@ async function probeFfmpeg(force = false) {
 
     let tool = null;
     for (const candidate of candidates) {
+      const resolved = resolveToolCandidate(candidate);
+      if (!resolved) continue;
       try {
-        const { stdout } = await execFileAsync(candidate, ['-version'], {
+        const { stdout } = await execFileAsync(resolved, ['-version'], {
           windowsHide: true,
           timeout: 5000,
           encoding: 'utf8'
         });
         const version = String(stdout || '').trim().split(/\r?\n/)[0];
         if (version) {
-          tool = { path: candidate, version };
+          tool = { path: resolved, version };
           break;
         }
       } catch (error) {
@@ -228,6 +284,7 @@ async function getStatus() {
     dir: downloadDir(),
     count: index.length,
     active: Array.from(jobs.keys()),
+    lastError,
     batch: batch ? {
       id: batch.id,
       title: batch.title,
@@ -499,6 +556,7 @@ function emitBatchProgress(current) {
 function completeBatch(current) {
   if (!current || batch !== current) return;
   batch = null;
+  appendLog(`playlist finished "${current.title}" (${current.saved} saved, ${current.failed} failed, ${current.skipped} skipped)`);
   emit({
     type: 'batch-complete',
     id: current.id,
@@ -514,6 +572,7 @@ function completeBatch(current) {
 function failBatch(current, message) {
   if (!current || batch !== current) return;
   batch = null;
+  recordError(message || 'The playlist download stopped.', { title: current.title });
   emit({
     type: 'batch-error',
     id: current.id,
@@ -599,12 +658,18 @@ async function startMany(payload) {
 
   const format = normalizeFormat(options.format);
   const [tool, ffmpeg] = await Promise.all([probeTool(), probeFfmpeg()]);
-  if (!tool) return { ok: false, error: 'tool-missing' };
+  if (!tool) {
+    recordError('yt-dlp was not found.', { title: options.title });
+    return { ok: false, error: 'tool-missing' };
+  }
   if (format === 'mp3' && !ffmpeg) {
+    const lastErrorInfo = recordError('MP3 downloads require FFmpeg. Install FFmpeg and try again.', {
+      title: options.title
+    });
     return {
       ok: false,
       error: 'ffmpeg-missing',
-      message: 'MP3 downloads require FFmpeg. Install FFmpeg and try again.'
+      message: lastErrorInfo.message
     };
   }
 
@@ -654,6 +719,7 @@ async function startMany(payload) {
   };
 
   batch = current;
+  appendLog(`playlist queued "${title}" (${items.length} tracks, ${format}, ${skipped} skipped)`);
   emit({
     type: 'batch-start',
     id,
@@ -691,6 +757,14 @@ function finishJob(job, code, signal, stderr) {
     const message = String(stderr || '').trim().split(/\r?\n/).filter(Boolean).slice(-1)[0]
       || `yt-dlp exited with code ${code}${signal ? ` (${signal})` : ''}.`;
     job.lastError = message;
+    recordError(message, job.meta);
+
+    if (job.batchId && batch && batch.id === job.batchId
+      && /ffmpeg not found|ffprobe and ffmpeg/i.test(message)) {
+      failBatch(batch, 'FFmpeg could not be used. Install FFmpeg or set YTMD_FFMPEG_PATH, then retry.');
+      return;
+    }
+
     emit({ type: 'error', id: job.id, videoId: job.meta.videoId, batchId: job.batchId || '', message });
     finishBatchItem(job, false);
     return;
@@ -722,12 +796,14 @@ function finishJob(job, code, signal, stderr) {
 
   if (!file) {
     removeFilesForJob(job);
+    const message = 'The downloaded file could not be found.';
+    recordError(message, job.meta);
     emit({
       type: 'error',
       id: job.id,
       videoId: job.meta.videoId,
       batchId: job.batchId || '',
-      message: 'The downloaded file could not be found.'
+      message
     });
     finishBatchItem(job, false);
     return;
@@ -767,12 +843,16 @@ async function start(meta, options = {}) {
 
   const format = normalizeFormat(options.format);
   const [tool, ffmpeg] = await Promise.all([probeTool(), probeFfmpeg()]);
-  if (!tool) return { ok: false, error: 'tool-missing' };
+  if (!tool) {
+    recordError('yt-dlp was not found.', clean);
+    return { ok: false, error: 'tool-missing' };
+  }
   if (format === 'mp3' && !ffmpeg) {
+    const lastErrorInfo = recordError('MP3 downloads require FFmpeg. Install FFmpeg and try again.', clean);
     return {
       ok: false,
       error: 'ffmpeg-missing',
-      message: 'MP3 downloads require FFmpeg. Install FFmpeg and try again.'
+      message: lastErrorInfo.message
     };
   }
   if (jobs.has(clean.videoId)) return { ok: false, error: 'already-running' };

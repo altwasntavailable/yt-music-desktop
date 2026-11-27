@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.1
+
+### Fixed
+
+- Fixed MP3/MP4 downloads failing when FFmpeg was found through `PATH` but not the
+  app's tools folder. The app now resolves the real FFmpeg executable path.
+- Added a persistent `downloads.log` and a visible **Last error** line in the
+  Offline panel so failed downloads are diagnosable instead of disappearing
+  silently.
+- Playlist downloads now stop immediately with a clear error if FFmpeg cannot be
+  used, instead of attempting every track.
+
 ## 1.2.0
 
 ### Added
