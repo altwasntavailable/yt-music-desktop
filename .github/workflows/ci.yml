@@ -23,7 +23,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies without running install scripts
-        run: npm ci --ignore-scripts
+        run: npm ci --omit=optional --ignore-scripts
 
       - name: Syntax check
         run: |
