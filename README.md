@@ -321,3 +321,14 @@ YouTube sometimes rejects requests from yt-dlp until it updates. Try again, or u
 
 **Check for updates does nothing**  
 Automatic updates only work in a packaged/installed build. In development, the app reports that updates are unavailable. For your own builds, update the `build.publish` owner/repo in `package.json` or set `YTMD_UPDATE_URL`.
+
+## Support the project
+
+If YT Music Desktop is useful to you:
+
+- Star the repository so other people can find it.
+- Share it with someone who lives in a YouTube Music browser tab.
+- Report bugs with the app version and the relevant log from `%APPDATA%\YT Music Desktop`.
+- Suggest features in the issue tracker — download and desktop-integration ideas are especially welcome.
+
+Ad blocking and offline downloading are the two features most people come for. Keeping those reliable is the priority.
