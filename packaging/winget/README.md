@@ -3,6 +3,10 @@
 The manifest in this folder packages the NSIS installer for
 `altwasntavailable.YTMusicDesktop`.
 
+The checked-in manifest currently targets **1.2.1**, the latest published
+release. The 1.3.0 manifest will be added after the 1.3.0 installer exists and
+its SHA-256 can be verified; do not update the URL or hash before then.
+
 Validate it locally:
 
 ```powershell
@@ -14,7 +18,9 @@ To publish it to the Winget community repository, submit the same manifest to
 [WingetCreate](https://github.com/microsoft/winget-create) or open the manifest
 pull request manually.
 
-Once accepted, users will be able to install with:
+Submission is still pending. Until the package is accepted, `winget install`
+will not find it; use the GitHub release instead. Once accepted, users will be
+able to install with:
 
 ```powershell
 winget install altwasntavailable.YTMusicDesktop

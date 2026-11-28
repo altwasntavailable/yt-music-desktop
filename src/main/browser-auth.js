@@ -9,6 +9,12 @@ const PARTITION = 'persist:ytmusic';
 const AUTH_URL = 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F';
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000;
 const POLL_INTERVAL_MS = 1500;
+const CDP_COMMAND_TIMEOUT_MS = 10 * 1000;
+const CDP_STARTUP_TIMEOUT_MS = 20 * 1000;
+const BROWSER_EXIT_TIMEOUT_MS = 5000;
+const PROFILE_DELETE_ATTEMPTS = 10;
+const PROFILE_DELETE_RETRY_MS = 250;
+const CDP_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
 let active = null;
 
@@ -71,37 +77,13 @@ function findBrowserExecutable() {
   return candidates[0] || '';
 }
 
-async function getFreePort() {
-  const net = require('net');
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = address && address.port;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-async function fetchJson(url, timeoutMs = 2000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return await response.json();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function cookieDomain(cookie) {
+  if (!cookie || typeof cookie !== 'object') return '';
   return String(cookie.domain || '').replace(/^\./, '').toLowerCase();
 }
 
 function isRelevantCookie(cookie) {
+  if (!cookie || typeof cookie !== 'object') return false;
   const domain = cookieDomain(cookie);
   return domain === 'google.com'
     || domain.endsWith('.google.com')
@@ -120,8 +102,9 @@ function isYouTubeDomain(cookie) {
 }
 
 function hasGoogleSession(cookies) {
-  const googleCookies = cookies.filter(isGoogleDomain);
-  const youtubeCookies = cookies.filter(isYouTubeDomain);
+  const list = Array.isArray(cookies) ? cookies.filter((cookie) => cookie && typeof cookie === 'object') : [];
+  const googleCookies = list.filter(isGoogleDomain);
+  const youtubeCookies = list.filter(isYouTubeDomain);
   const googleNames = new Set(googleCookies.map((cookie) => cookie.name));
   const youtubeNames = new Set(youtubeCookies.map((cookie) => cookie.name));
 
@@ -143,10 +126,14 @@ function hasGoogleSession(cookies) {
   return googleSignedIn && youtubeSignedIn;
 }
 
+function cookiePath(cookie) {
+  const value = String(cookie.path || '/');
+  return value.startsWith('/') ? value : `/${value}`;
+}
+
 function buildCookieUrl(cookie) {
   const domain = cookieDomain(cookie);
-  const cookiePath = String(cookie.path || '/');
-  return `https://${domain}${cookiePath.startsWith('/') ? cookiePath : `/${cookiePath}`}`;
+  return `https://${domain}${cookiePath(cookie)}`;
 }
 
 function normalizeSameSite(value) {
@@ -163,25 +150,39 @@ function normalizeSameSite(value) {
   }
 }
 
+function buildCookieDetails(cookie) {
+  const domain = String(cookie.domain || '');
+  const details = {
+    url: buildCookieUrl(cookie),
+    name: String(cookie.name || ''),
+    value: String(cookie.value == null ? '' : cookie.value),
+    path: cookiePath(cookie),
+    secure: Boolean(cookie.secure),
+    httpOnly: Boolean(cookie.httpOnly),
+    sameSite: normalizeSameSite(cookie.sameSite)
+  };
+
+  if (domain.startsWith('.')) details.domain = domain;
+
+  // Chrome's CDP uses -1 (and sometimes 0) for session cookies. Electron
+  // treats a missing expirationDate as session-scoped; passing -1 through
+  // would create an already-expired cookie.
+  const expires = Number(cookie.expires);
+  if (Number.isFinite(expires) && expires > 0) {
+    details.expirationDate = expires;
+  }
+
+  return details;
+}
+
 async function importCookies(cookies) {
   const ses = session.fromPartition(PARTITION);
   let imported = 0;
+  const list = Array.isArray(cookies) ? cookies : [];
 
-  for (const cookie of cookies.filter(isRelevantCookie)) {
-    const domain = String(cookie.domain || '');
-    const details = {
-      url: buildCookieUrl(cookie),
-      name: cookie.name,
-      value: cookie.value,
-      path: cookie.path || '/',
-      secure: Boolean(cookie.secure),
-      httpOnly: Boolean(cookie.httpOnly),
-      sameSite: normalizeSameSite(cookie.sameSite)
-    };
-    if (domain.startsWith('.')) details.domain = domain;
-    if (Number.isFinite(Number(cookie.expires)) && Number(cookie.expires) > 0) {
-      details.expirationDate = Number(cookie.expires);
-    }
+  for (const cookie of list.filter(isRelevantCookie)) {
+    if (!cookie || !cookie.name) continue;
+    const details = buildCookieDetails(cookie);
 
     try {
       await ses.cookies.set(details);
@@ -200,52 +201,305 @@ async function importCookies(cookies) {
   return imported;
 }
 
-function stopBrowserAuth({ closeBrowser = false, status = null } = {}) {
-  const current = active;
-  active = null;
-  if (!current) return;
-
-  clearTimeout(current.timeout);
-  clearInterval(current.pollTimer);
-
-  try {
-    current.ws.close();
-  } catch {
-    // The socket may already be closed.
+/**
+ * Chrome's --remote-debugging-pipe transport. Commands are NUL-terminated
+ * JSON written to fd 3; responses arrive as NUL-terminated JSON on fd 4.
+ * There is deliberately no localhost HTTP/WebSocket debugging endpoint.
+ */
+function createCdpPipeTransport(readable, writable, options = {}) {
+  if (
+    !readable
+    || !writable
+    || typeof readable.on !== 'function'
+    || typeof writable.write !== 'function'
+  ) {
+    throw new Error('Browser debugging pipe is unavailable.');
   }
 
-  if (closeBrowser) {
+  const commandTimeoutMs = Number(options.commandTimeoutMs) || CDP_COMMAND_TIMEOUT_MS;
+  const maxBufferBytes = Number(options.maxBufferBytes) || CDP_MAX_BUFFER_BYTES;
+
+  let nextId = 1;
+  let buffer = Buffer.alloc(0);
+  let closed = false;
+  let closeError = null;
+  const pending = new Map();
+
+  function cleanup() {
+    readable.removeListener('data', onData);
+    readable.removeListener('close', onReadableClose);
+    writable.removeListener('close', onWritableClose);
+    // Keep the error listeners attached: a killed browser can emit a late
+    // EPIPE/ERR_STREAM_DESTROYED, and an unhandled stream error would crash
+    // the main process. The handlers call close(), which is idempotent.
+  }
+
+  function close(reason = 'Browser connection is closed.') {
+    if (closed) return;
+    closed = true;
+    closeError = reason instanceof Error ? reason : new Error(String(reason));
     try {
-      current.child.kill();
+      cleanup();
     } catch {
-      // The browser may already have exited.
+      // Pending commands must still be rejected below.
     }
-    if (current.child && current.child.pid) {
+    buffer = Buffer.alloc(0);
+
+    for (const request of pending.values()) {
+      if (request.timer) clearTimeout(request.timer);
+      request.reject(closeError);
+    }
+    pending.clear();
+  }
+
+  function onData(chunk) {
+    if (closed) return;
+
+    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    buffer = buffer.length ? Buffer.concat([buffer, data]) : data;
+    if (buffer.length > maxBufferBytes) {
+      close(new Error('Browser debugging response was too large.'));
+      return;
+    }
+
+    let index;
+    while ((index = buffer.indexOf(0)) !== -1) {
+      const text = buffer.subarray(0, index).toString('utf8');
+      buffer = buffer.subarray(index + 1);
+      if (!text.trim()) continue;
+
+      let message;
       try {
-        execFileSync(
-          'taskkill',
-          ['/PID', String(current.child.pid), '/T', '/F'],
-          { windowsHide: true, timeout: 4000, stdio: 'ignore' }
-        );
+        message = JSON.parse(text);
       } catch {
-        // The browser may already have exited.
+        continue;
+      }
+
+      if (!message || message.id == null) continue;
+      const request = pending.get(message.id);
+      if (!request) continue;
+
+      pending.delete(message.id);
+      if (request.timer) clearTimeout(request.timer);
+      if (message.error) {
+        request.reject(new Error(message.error.message || 'Browser command failed.'));
+      } else {
+        request.resolve(message.result);
       }
     }
   }
 
-  if (status && current.onStatus) current.onStatus(status);
+  function onReadableError(error) {
+    close(error instanceof Error ? error : new Error('Browser connection failed.'));
+  }
+
+  function onReadableClose() {
+    close(new Error('Browser connection closed.'));
+  }
+
+  function onWritableError(error) {
+    close(error instanceof Error ? error : new Error('Browser connection failed.'));
+  }
+
+  function onWritableClose() {
+    close(new Error('Browser connection closed.'));
+  }
+
+  readable.on('data', onData);
+  readable.on('error', onReadableError);
+  readable.on('close', onReadableClose);
+  writable.on('error', onWritableError);
+  writable.on('close', onWritableClose);
+
+  function send(method, params = {}, timeoutMs = commandTimeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (closed) {
+        reject(closeError || new Error('Browser connection is closed.'));
+        return;
+      }
+
+      const id = nextId;
+      nextId += 1;
+      const timer = setTimeout(() => {
+        if (!pending.has(id)) return;
+        pending.delete(id);
+        reject(new Error('Browser command timed out.'));
+      }, Math.max(100, Number(timeoutMs) || commandTimeoutMs));
+
+      pending.set(id, { resolve, reject, timer });
+
+      let data;
+      try {
+        data = Buffer.from(`${JSON.stringify({ id, method, params })}\0`, 'utf8');
+      } catch (error) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(error);
+        return;
+      }
+
+      try {
+        writable.write(data);
+      } catch (error) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(error);
+      }
+    });
+  }
+
+  return {
+    send,
+    close,
+    isClosed: () => closed
+  };
 }
 
-async function startBrowserAuth({ onStatus, onImported }) {
+function terminateBrowser(child) {
+  if (!child) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  // Kill the whole tree first on Windows; killing only the main process can
+  // leave renderer/crashpad children holding files in the temporary profile.
+  if (process.platform === 'win32' && child.pid) {
+    try {
+      execFileSync(
+        'taskkill',
+        ['/PID', String(child.pid), '/T', '/F'],
+        { windowsHide: true, timeout: 4000, stdio: 'ignore' }
+      );
+      return;
+    } catch {
+      // Fall back to the process handle below.
+    }
+  }
+
+  try {
+    child.kill();
+  } catch {
+    // The browser may already be gone.
+  }
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener('exit', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, Math.max(0, timeoutMs));
+    if (timer.unref) timer.unref();
+    child.once('exit', finish);
+  });
+}
+
+async function removeProfileDir(profileDir) {
+  if (!profileDir) return false;
+
+  for (let attempt = 1; attempt <= PROFILE_DELETE_ATTEMPTS; attempt += 1) {
+    try {
+      await fs.promises.rm(profileDir, { recursive: true, force: true });
+      return true;
+    } catch (error) {
+      if (attempt === PROFILE_DELETE_ATTEMPTS) {
+        console.warn('[auth] Could not remove the browser sign-in profile:', error.message);
+        return false;
+      }
+      await delay(PROFILE_DELETE_RETRY_MS);
+    }
+  }
+
+  return false;
+}
+
+function emitStatus(auth, payload) {
+  try {
+    if (auth && typeof auth.onStatus === 'function') auth.onStatus(payload);
+  } catch {
+    // The renderer may be closing.
+  }
+}
+
+async function stopBrowserAuth({ closeBrowser = false, status = null } = {}) {
+  const current = active;
+  active = null;
+  if (!current) return;
+
+  if (current.timeout) {
+    clearTimeout(current.timeout);
+    current.timeout = null;
+  }
+  if (current.pollTimer) {
+    clearInterval(current.pollTimer);
+    current.pollTimer = null;
+  }
+
+  if (current.transport) {
+    try {
+      current.transport.close(new Error('Browser sign-in stopped.'));
+    } catch {
+      // The transport may already be closed.
+    }
+  }
+
+  if (closeBrowser) terminateBrowser(current.child);
+  if (status) emitStatus(current, status);
+  if (closeBrowser && current.child) {
+    await waitForChildExit(current.child, BROWSER_EXIT_TIMEOUT_MS);
+  }
+  // Every terminal path leaves no reusable Google-session profile behind:
+  // success, cancel, timeout, browser exit, and app quit all land here.
+  if (current.profileDir) {
+    await removeProfileDir(current.profileDir);
+  }
+}
+
+async function finishSuccessfulImport(auth, imported) {
+  const profileDir = auth.profileDir;
+
+  // The browser must be fully gone before its dedicated profile is removed.
+  await stopBrowserAuth({ closeBrowser: true });
+  await removeProfileDir(profileDir);
+
+  emitStatus(auth, { status: 'success', message: 'Signed in! Loading your YouTube Music library…' });
+
+  if (typeof auth.onImported === 'function') {
+    try {
+      auth.onImported({ imported });
+    } catch (error) {
+      console.warn('[auth] Could not finish browser sign-in:', error.message);
+    }
+  }
+}
+
+async function startBrowserAuth({ onStatus, onImported } = {}) {
+  const notify = typeof onStatus === 'function' ? onStatus : null;
+  const status = (payload) => {
+    if (!notify) return;
+    try {
+      notify(payload);
+    } catch {
+      // The renderer may be closing.
+    }
+  };
+
   if (active) {
-    onStatus({ status: 'info', message: 'Browser sign-in is already open.' });
+    status({ status: 'info', message: 'Browser sign-in is already open.' });
     return { ok: false, error: 'already-open' };
   }
 
   const executable = findBrowserExecutable();
   if (!executable) {
     const message = 'Could not find Chrome or Edge for browser sign-in. Install Chrome or use Edge.';
-    onStatus({ status: 'error', message });
+    status({ status: 'error', message });
     return { ok: false, error: message };
   }
 
@@ -254,60 +508,50 @@ async function startBrowserAuth({ onStatus, onImported }) {
     fs.mkdirSync(profileDir, { recursive: true });
   } catch (error) {
     const message = `Could not create the browser sign-in profile: ${error.message}`;
-    onStatus({ status: 'error', message });
+    status({ status: 'error', message });
     return { ok: false, error: message };
   }
-
-  const port = await getFreePort();
-  if (!port) {
-    const message = 'Could not find a local port for browser sign-in.';
-    onStatus({ status: 'error', message });
-    return { ok: false, error: message };
-  }
-
-  const args = [
-    `--user-data-dir=${profileDir}`,
-    `--remote-debugging-port=${port}`,
-    '--remote-debugging-address=127.0.0.1',
-    '--remote-allow-origins=*',
-    '--no-first-run',
-    '--no-default-browser-check',
-    '--new-window',
-    AUTH_URL
-  ];
 
   let child;
   try {
-    child = spawn(executable, args, {
+    child = spawn(executable, [
+      `--user-data-dir=${profileDir}`,
+      // Keep CDP entirely on private stdio pipes. No debugging port is
+      // opened, so another local process cannot attach while Google cookies
+      // are live in the browser profile.
+      '--remote-debugging-pipe',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--new-window',
+      AUTH_URL
+    ], {
       detached: false,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
       windowsHide: false
     });
   } catch (error) {
     const message = `Could not open the browser: ${error.message}`;
-    onStatus({ status: 'error', message });
+    status({ status: 'error', message });
     return { ok: false, error: message };
-  }
-
-  if (process.argv.includes('--dev')) {
-    console.log('[auth] browser:', executable);
-    console.log('[auth] cdp port:', port);
   }
 
   const auth = {
     child,
-    port,
-    ws: null,
+    transport: null,
     pollTimer: null,
     timeout: null,
     profileDir,
-    onStatus
+    onStatus: status,
+    onImported: typeof onImported === 'function' ? onImported : null,
+    checking: false,
+    importing: false,
+    imported: false
   };
   active = auth;
 
   child.on('error', (error) => {
-    if (active === auth) {
-      stopBrowserAuth({
+    if (active === auth && !auth.importing) {
+      void stopBrowserAuth({
         closeBrowser: true,
         status: { status: 'error', message: `Browser sign-in failed: ${error.message}` }
       });
@@ -315,133 +559,97 @@ async function startBrowserAuth({ onStatus, onImported }) {
   });
 
   child.on('exit', () => {
-    if (active === auth) {
-      stopBrowserAuth({
+    if (active === auth && !auth.importing) {
+      void stopBrowserAuth({
         status: { status: 'cancelled', message: 'Browser sign-in was cancelled.' }
       });
     }
   });
 
-  onStatus({ status: 'started', message: 'Opening your browser for Google sign-in…' });
-
-  let version = null;
-  const deadline = Date.now() + 20000;
-  while (Date.now() < deadline && active === auth) {
-    try {
-      version = await fetchJson(`http://127.0.0.1:${port}/json/version`);
-      if (version && version.webSocketDebuggerUrl) break;
-    } catch {
-      // The browser is still starting.
-    }
-    await delay(300);
+  try {
+    auth.transport = createCdpPipeTransport(child.stdio[4], child.stdio[3]);
+  } catch (error) {
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = `Could not open the browser debugging channel: ${error.message}`;
+    status({ status: 'error', message });
+    return { ok: false, error: message };
   }
 
   if (active !== auth) {
+    try {
+      auth.transport.close(new Error('Browser sign-in stopped.'));
+    } catch {
+      // The transport may already be closed.
+    }
     return { ok: false, error: 'cancelled' };
   }
 
-  if (!version || !version.webSocketDebuggerUrl) {
-    stopBrowserAuth({ closeBrowser: true });
-    const message = 'The browser did not start in time. Try again.';
-    onStatus({ status: 'error', message });
-    return { ok: false, error: message };
-  }
+  status({ status: 'started', message: 'Opening your browser for Google sign-in…' });
 
-  let ws;
   try {
-    ws = new WebSocket(version.webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Timed out connecting to the browser.')), 10000);
-      ws.addEventListener('open', () => {
-        clearTimeout(timer);
-        resolve();
-      }, { once: true });
-      ws.addEventListener('error', () => {
-        clearTimeout(timer);
-        reject(new Error('Could not connect to the browser.'));
-      }, { once: true });
-    });
+    await auth.transport.send('Browser.getVersion', {}, CDP_STARTUP_TIMEOUT_MS);
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await auth.transport.send('Storage.getCookies');
   } catch (error) {
-    stopBrowserAuth({ closeBrowser: true });
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await stopBrowserAuth({ closeBrowser: true });
     const message = `Could not connect to the browser: ${error.message}`;
-    onStatus({ status: 'error', message });
+    status({ status: 'error', message });
     return { ok: false, error: message };
   }
 
-  auth.ws = ws;
-
-  let nextId = 1;
-  const pending = new Map();
-  ws.addEventListener('message', (event) => {
-    let message;
-    try {
-      message = JSON.parse(String(event.data));
-    } catch {
-      return;
-    }
-    if (!message.id || !pending.has(message.id)) return;
-    const request = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error) request.reject(new Error(message.error.message || 'Browser command failed.'));
-    else request.resolve(message.result);
-  });
-
-  const send = (method, params = {}) => new Promise((resolve, reject) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      reject(new Error('Browser connection is closed.'));
-      return;
-    }
-    const id = nextId++;
-    pending.set(id, { resolve, reject });
-    ws.send(JSON.stringify({ id, method, params }));
-  });
-
-  ws.addEventListener('close', () => {
-    if (active === auth) {
-      stopBrowserAuth({
-        status: { status: 'cancelled', message: 'Browser sign-in was cancelled.' }
-      });
-    }
-  });
-
-  try {
-    await send('Storage.getCookies');
-  } catch (error) {
-    stopBrowserAuth({ closeBrowser: true });
-    const message = `Could not read browser cookies: ${error.message}`;
-    onStatus({ status: 'error', message });
-    return { ok: false, error: message };
-  }
-
-  onStatus({ status: 'info', message: 'Browser connected. Sign in to continue.' });
+  status({ status: 'info', message: 'Browser connected. Sign in to continue.' });
 
   const checkCookies = async () => {
-    if (active !== auth) return;
+    // checking keeps the polls single-flight; importing/imported ensure two
+    // late responses from the same sign-in can never import twice.
+    if (active !== auth || auth.checking || auth.importing || auth.imported) return;
+    auth.checking = true;
+
     try {
-      const result = await send('Storage.getCookies');
+      const result = await auth.transport.send('Storage.getCookies');
+      if (active !== auth || auth.importing || auth.imported) return;
+
       const cookies = result && Array.isArray(result.cookies) ? result.cookies : [];
       if (!hasGoogleSession(cookies)) return;
 
-      const imported = await importCookies(cookies);
-      if (!imported) return;
-
-      stopBrowserAuth({ closeBrowser: true });
-      onStatus({ status: 'success', message: 'Signed in! Loading your YouTube Music library…' });
-      onImported({ imported });
-    } catch (error) {
-      if (active === auth) {
-        stopBrowserAuth({ closeBrowser: true });
-        onStatus({ status: 'error', message: `Could not import the browser session: ${error.message}` });
+      auth.importing = true;
+      let imported = 0;
+      try {
+        imported = await importCookies(cookies);
+      } catch (error) {
+        auth.importing = false;
+        if (active !== auth) return;
+        await stopBrowserAuth({ closeBrowser: true });
+        status({ status: 'error', message: `Could not import the browser session: ${error.message}` });
+        return;
       }
+
+      if (!imported) {
+        auth.importing = false;
+        return;
+      }
+
+      auth.imported = true;
+      await finishSuccessfulImport(auth, imported);
+    } catch (error) {
+      if (active !== auth || auth.imported) return;
+      auth.importing = false;
+      await stopBrowserAuth({ closeBrowser: true });
+      status({ status: 'error', message: `Could not import the browser session: ${error.message}` });
+    } finally {
+      auth.checking = false;
     }
   };
 
-  auth.pollTimer = setInterval(checkCookies, POLL_INTERVAL_MS);
-  checkCookies();
+  auth.pollTimer = setInterval(() => {
+    void checkCookies();
+  }, POLL_INTERVAL_MS);
+  void checkCookies();
 
   auth.timeout = setTimeout(() => {
     if (active === auth) {
-      stopBrowserAuth({
+      void stopBrowserAuth({
         closeBrowser: true,
         status: { status: 'cancelled', message: 'Browser sign-in timed out. Try again.' }
       });
@@ -452,13 +660,9 @@ async function startBrowserAuth({ onStatus, onImported }) {
 }
 
 async function clearBrowserSignInProfile() {
-  stopBrowserAuth({ closeBrowser: true });
+  await stopBrowserAuth({ closeBrowser: true });
   const profileDir = path.join(app.getPath('userData'), 'browser-signin');
-  try {
-    fs.rmSync(profileDir, { recursive: true, force: true });
-  } catch (error) {
-    console.warn('[auth] Could not clear the browser sign-in profile:', error.message);
-  }
+  await removeProfileDir(profileDir);
 }
 
 module.exports = {
@@ -466,5 +670,7 @@ module.exports = {
   stopBrowserAuth,
   clearBrowserSignInProfile,
   hasGoogleSession,
-  importCookies
+  importCookies,
+  buildCookieDetails,
+  createCdpPipeTransport
 };

@@ -1,7 +1,7 @@
 {
   "name": "yt-music-desktop",
-  "version": "1.2.1",
-  "description": "Unofficial YouTube Music desktop app for Windows with ad blocking, offline MP3/MP4 downloads, lyrics, equalizer, SponsorBlock, and tray playback.",
+  "version": "1.3.0",
+  "description": "Unofficial YouTube Music desktop app for Windows with ad blocking, offline M4A/MP3/MP4 downloads, an offline library, lyrics, equalizer, SponsorBlock, and tray playback.",
   "main": "src/main/main.js",
   "author": "ALT (altwasntavailable)",
   "license": "MIT",
@@ -17,10 +17,11 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "test": "node --test test/download-utils.test.js test/desktop-integration.test.js",
     "icons": "node scripts/generate-icons.js",
     "pack": "npm run icons && electron-builder --dir",
-    "dist": "npm run icons && electron-builder --win nsis",
-    "dist:portable": "npm run icons && electron-builder --win portable"
+    "dist": "npm run icons && electron-builder --win nsis --publish never",
+    "dist:portable": "npm run icons && electron-builder --win portable --publish never"
   },
   "dependencies": {
     "discord-rpc": "^4.0.1",

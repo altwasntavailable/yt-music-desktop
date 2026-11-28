@@ -27,6 +27,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --omit=optional
 
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME does not match package.json version $version"
+          }
+
       - name: Build installer
         run: npm run dist
 

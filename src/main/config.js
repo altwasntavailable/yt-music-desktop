@@ -17,7 +17,17 @@ const DEFAULTS = {
   },
   closeToTray: true,
   preventSleep: true,
+  launchAtLogin: false,
+  notifications: true,
   lyricsOffset: 0,
+  downloads: {
+    dir: '',
+    audioQuality: 'best',
+    videoQuality: '1080',
+    embedMetadata: true,
+    embedThumbnail: true,
+    cutSponsorBlock: false
+  },
   discord: {
     enabled: false,
     useCustom: false,
@@ -86,14 +96,34 @@ function sanitize(input) {
     : [];
   merged.sponsorBlock = {
     enabled: Boolean(sb.enabled),
-    categories: categories.length
+    categories: Array.isArray(sb.categories)
       ? Array.from(new Set(categories))
       : ['sponsor', 'selfpromo', 'interaction', 'music_offtopic']
   };
 
   merged.closeToTray = Boolean(merged.closeToTray);
   merged.preventSleep = Boolean(merged.preventSleep);
+  merged.launchAtLogin = Boolean(merged.launchAtLogin);
+  merged.notifications = Boolean(merged.notifications);
   merged.lyricsOffset = clampNumber(merged.lyricsOffset, -15, 15, 0);
+
+  const downloadSettings = merged.downloads || {};
+  const audioQualities = ['best', '320', '256', '192', '128'];
+  const videoQualities = ['best', '1080', '720', '480'];
+  merged.downloads = {
+    dir: typeof downloadSettings.dir === 'string'
+      ? downloadSettings.dir.trim().slice(0, 1000)
+      : '',
+    audioQuality: audioQualities.includes(String(downloadSettings.audioQuality))
+      ? String(downloadSettings.audioQuality)
+      : 'best',
+    videoQuality: videoQualities.includes(String(downloadSettings.videoQuality))
+      ? String(downloadSettings.videoQuality)
+      : '1080',
+    embedMetadata: downloadSettings.embedMetadata !== false,
+    embedThumbnail: downloadSettings.embedThumbnail !== false,
+    cutSponsorBlock: Boolean(downloadSettings.cutSponsorBlock)
+  };
 
   merged.discord = {
     enabled: Boolean(merged.discord && merged.discord.enabled),
@@ -111,11 +141,16 @@ function sanitize(input) {
   };
 
   const win = merged.window || {};
+  const optionalCoordinate = (value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.round(number) : null;
+  };
   merged.window = {
     width: Math.round(clampNumber(win.width, 960, 5000, DEFAULTS.window.width)),
     height: Math.round(clampNumber(win.height, 620, 3500, DEFAULTS.window.height)),
-    x: Number.isFinite(Number(win.x)) ? Math.round(Number(win.x)) : null,
-    y: Number.isFinite(Number(win.y)) ? Math.round(Number(win.y)) : null,
+    x: optionalCoordinate(win.x),
+    y: optionalCoordinate(win.y),
     maximized: Boolean(win.maximized)
   };
 

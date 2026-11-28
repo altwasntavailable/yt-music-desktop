@@ -33,8 +33,18 @@ function load() {
   updateUrl = String(process.env.YTMD_UPDATE_URL || '').trim();
   if (updateUrl) {
     try {
-      autoUpdater.setFeedURL({ provider: 'generic', url: updateUrl });
-    } catch (error) {}
+      const parsed = new URL(updateUrl);
+      const local = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+      if (parsed.protocol !== 'https:' && !(local && parsed.protocol === 'http:')) {
+        console.error('[updater] Ignoring YTMD_UPDATE_URL: HTTPS is required.');
+        updateUrl = '';
+      } else {
+        autoUpdater.setFeedURL({ provider: 'generic', url: updateUrl });
+      }
+    } catch (error) {
+      console.error('[updater] Ignoring invalid YTMD_UPDATE_URL:', error.message);
+      updateUrl = '';
+    }
   }
 
   autoUpdater.on('checking-for-update', () => emit({ status: 'checking' }));
@@ -66,12 +76,17 @@ function init(handler) {
   load();
 }
 
+function isPortable() {
+  return Boolean(String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim());
+}
+
 function getStatus() {
   return {
-    supported: app.isPackaged,
+    supported: app.isPackaged && !isPortable(),
     version: app.getVersion(),
     downloaded: downloaded ? downloaded.version || true : false,
-    feed: updateUrl || null
+    feed: updateUrl || null,
+    portable: isPortable()
   };
 }
 
@@ -82,6 +97,13 @@ async function check(manual = true) {
       message: 'Automatic updates are only available in the installed build.'
     });
     return { ok: false, reason: 'dev' };
+  }
+  if (isPortable()) {
+    emit({
+      status: 'dev',
+      message: 'Portable builds are updated by downloading a new portable executable from GitHub Releases.'
+    });
+    return { ok: false, reason: 'portable' };
   }
 
   const updater = load();
@@ -118,7 +140,7 @@ function quitAndInstall() {
 }
 
 function startPeriodicChecks() {
-  if (!app.isPackaged) return;
+  if (!app.isPackaged || isPortable()) return;
   setTimeout(() => check(false), 20000);
   const timer = setInterval(() => check(false), 6 * 60 * 60 * 1000);
   if (timer.unref) timer.unref();

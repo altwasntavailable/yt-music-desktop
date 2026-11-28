@@ -1,5 +1,83 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Downloads now support **M4A** (original audio, no FFmpeg), **MP3** (128, 192,
+  256, or 320 kbps, or best VBR), and **MP4** (480p, 720p, 1080p, or best).
+- The download folder can be changed from **Settings → Downloads** or the
+  **Offline** panel. Existing downloads keep their paths and remain playable.
+- Optional title/artist/album tags and cover art for audio downloads, plus
+  optional SponsorBlock segment removal during download. Both require FFmpeg.
+- Install and update the app-managed `yt-dlp` from the Offline panel. The UI
+  shows the installed version and offers a one-click install; external copies
+  must be updated separately.
+- Offline library: search, audio/video filter, sorting, total track count and
+  size, per-track details, cancellation for active downloads, retry for the last
+  failed track, and shortcuts to the download log and active download folder.
+- Offline player: previous/next, shuffle, repeat, queue position, playback
+  speed, Windows media-session metadata/actions, and player state forwarded to
+  the tray, Discord Rich Presence, and the sleep-prevention blocker.
+- Offline-first error screen: when YouTube Music fails to load, the error screen
+  offers the offline library instead of only a retry button.
+- Playlist downloads add each track to the offline library as soon as that
+  track finishes.
+- Windows desktop integration: taskbar thumbnail buttons (Previous,
+  Play/Pause, Next, Download, Settings), jump-list actions and recent
+  downloads, taskbar download progress, completion/error overlays, and
+  track-change notifications when the app is hidden.
+- Sleep timer (15–90 minutes) that pauses playback.
+- Start with Windows, launching the installed app hidden in the tray.
+- The system is kept awake while a download is active, even if the window is in
+  the tray.
+- Diagnostics actions to copy app/tool/download status and recent logs, open
+  the app data folder, and open the download log.
+
+### Changed
+
+- The download dialog exposes per-download MP3 quality, MP4 quality, tag/cover
+  art, and SponsorBlock cutting options; Settings holds the defaults.
+- The Offline panel is now a library with tool status and download controls
+  rather than only a file list.
+
+### Fixed
+
+- The SponsorBlock category list can now legitimately be empty. Unchecking every
+  category is preserved instead of being replaced with the default categories.
+- Lyrics offset controls now move lyrics in the direction their labels describe.
+- The **Restart & install update** button stays visible after closing and
+  reopening Settings when an update has already downloaded.
+- Escape closes the open download dialog or download menu, and the drawer, even
+  when the YouTube Music player has keyboard focus.
+- Tag and cover-art embedding now works for audio downloads when FFmpeg is
+  available. If the optional metadata step fails, the track is kept with a
+  warning instead of being discarded.
+- Per-track downloads appear in the offline library immediately when each track
+  finishes, not only when the whole playlist completes.
+- Offline playback streams large files from disk instead of loading the whole
+  file into memory, so large MP4 downloads start without a memory spike.
+- Download retries now resume from kept partial files, stale library entries are
+  pruned instead of blocking a re-download, and cancelling a playlist can no
+  longer start a pending track after the cancel.
+- First launch no longer forces the window to the top-left corner; saved window
+  coordinates are optional.
+- A transient SponsorBlock lookup failure no longer disables segments for six
+  hours; failures retry after one minute.
+- Portable builds use the outer portable launcher for watchdog restart, jump
+  list, and Start with Windows, instead of the temporary extracted executable.
+  Portable builds no longer report as supporting in-app updates.
+
+### Security
+
+- IPC handlers reject calls from anything other than the app's own renderer.
+- The `ytmd-media` protocol streams offline files with HTTP range support and
+  only resolves files tracked in the download index.
+- Browser sign-in now uses a private stdio debugging pipe instead of a localhost
+  CDP port, and deletes the temporary browser profile after a successful import.
+- In-app yt-dlp updates verify the resulting executable against the official
+  SHA-256 checksum list.
+
 ## 1.2.1
 
 ### Fixed

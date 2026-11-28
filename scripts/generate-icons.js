@@ -12,7 +12,13 @@ const { PNG } = require('pngjs');
 const ROOT = path.resolve(__dirname, '..');
 const BUILD_DIR = path.join(ROOT, 'build');
 const ASSETS_DIR = path.join(ROOT, 'assets');
+const THUMBAR_DIR = path.join(ASSETS_DIR, 'thumbar');
+const OVERLAY_DIR = path.join(ASSETS_DIR, 'overlays');
 const SUPERSAMPLE = 4;
+const MEDIA_ICON_SIZE = 32;
+const WHITE = [255, 255, 255, 1];
+const COMPLETE_GREEN = [63, 185, 80, 1];
+const ERROR_RED = [248, 81, 73, 1];
 
 function insideRoundedRect(x, y, size, radius) {
   const dx = Math.max(Math.abs(x - size / 2) - (size / 2 - radius), 0);
@@ -59,6 +65,100 @@ function blendPixel(buffer, offset, r, g, b, a) {
   buffer[offset + 1] = Math.round((g * alpha + buffer[offset + 1] * existingAlpha * (1 - alpha)) / outAlpha);
   buffer[offset + 2] = Math.round((b * alpha + buffer[offset + 2] * existingAlpha * (1 - alpha)) / outAlpha);
   buffer[offset + 3] = Math.round(outAlpha * 255);
+}
+
+function distanceToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function insideLine(x, y, ax, ay, bx, by, halfWidth) {
+  return distanceToSegment(x, y, ax, ay, bx, by) <= halfWidth;
+}
+
+function renderGlyph(size, shader) {
+  const S = size * SUPERSAMPLE;
+  const buffer = Buffer.alloc(S * S * 4);
+
+  for (let y = 0; y < S; y += 1) {
+    for (let x = 0; x < S; x += 1) {
+      const color = shader((x + 0.5) / S, (y + 0.5) / S);
+      if (!color) continue;
+
+      const alpha = Math.max(0, Math.min(1, Number(color[3])));
+      if (alpha <= 0) continue;
+
+      const offset = (y * S + x) * 4;
+      blendPixel(buffer, offset, color[0], color[1], color[2], Math.round(alpha * 255));
+    }
+  }
+
+  return { buffer, S };
+}
+
+/* White glyphs for the Windows taskbar thumbnail toolbar. Coordinates are
+ * fractions of the canvas so the same shapes can be rendered at other sizes. */
+function glyphPrevious(x, y) {
+  const bar = x >= 0.22 && x <= 0.32 && y >= 0.2 && y <= 0.8;
+  const triangle = insideTriangle(x, y, 0.72, 0.18, 0.72, 0.82, 0.32, 0.5);
+  return bar || triangle ? WHITE : null;
+}
+
+function glyphNext(x, y) {
+  const bar = x >= 0.68 && x <= 0.78 && y >= 0.2 && y <= 0.8;
+  const triangle = insideTriangle(x, y, 0.28, 0.18, 0.28, 0.82, 0.68, 0.5);
+  return bar || triangle ? WHITE : null;
+}
+
+function glyphPlay(x, y) {
+  return insideTriangle(x, y, 0.32, 0.18, 0.32, 0.82, 0.82, 0.5) ? WHITE : null;
+}
+
+function glyphPause(x, y) {
+  return (
+    insideLine(x, y, 0.36, 0.2, 0.36, 0.8, 0.085)
+    || insideLine(x, y, 0.64, 0.2, 0.64, 0.8, 0.085)
+  ) ? WHITE : null;
+}
+
+function glyphDownload(x, y) {
+  const stem = insideLine(x, y, 0.5, 0.15, 0.5, 0.58, 0.055);
+  const arrow = insideTriangle(x, y, 0.25, 0.52, 0.75, 0.52, 0.5, 0.82);
+  const tray = insideLine(x, y, 0.22, 0.89, 0.78, 0.89, 0.055);
+  return stem || arrow || tray ? WHITE : null;
+}
+
+function glyphSettings(x, y) {
+  const dx = x - 0.5;
+  const dy = y - 0.5;
+  const distance = Math.hypot(dx, dy);
+  if (distance < 0.105) return null;
+
+  const angle = Math.atan2(dy, dx);
+  const outer = 0.355 + 0.055 * (Math.cos(angle * 8) * 0.5 + 0.5);
+  return distance >= 0.22 && distance <= outer ? WHITE : null;
+}
+
+function overlayComplete(x, y) {
+  const check = (
+    insideLine(x, y, 0.27, 0.52, 0.44, 0.69, 0.07)
+    || insideLine(x, y, 0.44, 0.69, 0.75, 0.33, 0.07)
+  );
+  if (check) return WHITE;
+  return Math.hypot(x - 0.5, y - 0.5) <= 0.47 ? COMPLETE_GREEN : null;
+}
+
+function overlayError(x, y) {
+  const mark = (
+    insideLine(x, y, 0.5, 0.23, 0.5, 0.56, 0.065)
+    || Math.hypot(x - 0.5, y - 0.72) <= 0.075
+  );
+  if (mark) return WHITE;
+  return Math.hypot(x - 0.5, y - 0.5) <= 0.47 ? ERROR_RED : null;
 }
 
 function renderHighRes(size, transparentBackground) {
@@ -206,6 +306,32 @@ function main() {
 
   const tray2xHigh = renderHighRes(64, true);
   write(path.join(ASSETS_DIR, 'tray@2x.png'), downsample(64, tray2xHigh));
+
+  const glyphs = {
+    previous: glyphPrevious,
+    next: glyphNext,
+    play: glyphPlay,
+    pause: glyphPause,
+    download: glyphDownload,
+    settings: glyphSettings
+  };
+  for (const [name, shader] of Object.entries(glyphs)) {
+    write(
+      path.join(THUMBAR_DIR, `${name}.png`),
+      downsample(MEDIA_ICON_SIZE, renderGlyph(MEDIA_ICON_SIZE, shader))
+    );
+  }
+
+  const overlays = {
+    complete: overlayComplete,
+    error: overlayError
+  };
+  for (const [name, shader] of Object.entries(overlays)) {
+    write(
+      path.join(OVERLAY_DIR, `${name}.png`),
+      downsample(MEDIA_ICON_SIZE, renderGlyph(MEDIA_ICON_SIZE, shader))
+    );
+  }
 }
 
 main();

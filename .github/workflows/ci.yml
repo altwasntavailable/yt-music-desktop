@@ -22,14 +22,16 @@ jobs:
           node-version: 24
           cache: npm
 
-      - name: Install dependencies without running install scripts
-        run: npm ci --omit=optional --ignore-scripts
+      - name: Install dependencies
+        run: npm ci --omit=optional
 
       - name: Syntax check
         run: |
           node --check src/main/main.js
           node --check src/main/watchdog.js
           node --check src/main/downloads.js
+          node --check src/main/download-utils.js
+          node --check src/main/desktop-integration.js
           node --check src/main/tray.js
           node --check src/main/config.js
           node --check src/main/discord.js
@@ -41,5 +43,29 @@ jobs:
           node --check src/renderer/app.js
           node --check scripts/generate-icons.js
 
+      - name: Unit tests
+        run: npm test
+
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --omit=optional
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build unpacked Windows app
+        run: npm run pack

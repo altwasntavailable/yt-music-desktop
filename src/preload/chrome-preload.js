@@ -35,6 +35,15 @@ contextBridge.exposeInMainWorld('desktop', {
   clearSession: () => ipcRenderer.invoke('session:clear'),
   getAppInfo: () => ipcRenderer.invoke('app:info'),
   confirmSignOut: () => ipcRenderer.invoke('app:confirm-signout'),
+  copyDiagnostics: () => ipcRenderer.invoke('app:copy-diagnostics'),
+  openAppData: () => ipcRenderer.invoke('app:open-user-data'),
+
+  sleepTimer: {
+    get: () => ipcRenderer.invoke('sleep-timer:get'),
+    start: (minutes) => ipcRenderer.invoke('sleep-timer:start', minutes),
+    cancel: () => ipcRenderer.invoke('sleep-timer:cancel'),
+    onStatus: (callback) => subscribe('sleep-timer:status', callback)
+  },
 
   browserSignIn: () => ipcRenderer.invoke('auth:browser-sign-in'),
   cancelBrowserSignIn: () => ipcRenderer.invoke('auth:browser-cancel'),
@@ -53,12 +62,16 @@ contextBridge.exposeInMainWorld('desktop', {
   downloads: {
     getStatus: () => ipcRenderer.invoke('downloads:status'),
     installTool: () => ipcRenderer.invoke('downloads:install-tool'),
+    updateTool: () => ipcRenderer.invoke('downloads:update-tool'),
+    chooseFolder: () => ipcRenderer.invoke('downloads:choose-folder'),
     start: (meta, options) => ipcRenderer.invoke('downloads:start', meta, options || {}),
+    retry: (meta, options) => ipcRenderer.invoke('downloads:retry', meta, options || {}),
     startMany: (payload) => ipcRenderer.invoke('downloads:start-many', payload || {}),
     list: () => ipcRenderer.invoke('downloads:list'),
     cancel: (id) => ipcRenderer.invoke('downloads:cancel', id),
     remove: (id) => ipcRenderer.invoke('downloads:remove', id),
     openFolder: () => ipcRenderer.invoke('downloads:open-folder'),
+    openLog: () => ipcRenderer.invoke('downloads:open-log'),
     reveal: (id) => ipcRenderer.invoke('downloads:reveal', id),
     onEvent: (callback) => subscribe('downloads:event', callback)
   },

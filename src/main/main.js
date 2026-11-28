@@ -3,10 +3,13 @@
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const { Readable } = require('stream');
+const { pathToFileURL } = require('url');
 const {
   app,
   BrowserWindow,
   Menu,
+  clipboard,
   dialog,
   nativeTheme,
   powerMonitor,
@@ -25,6 +28,7 @@ const sponsorblock = require('./sponsorblock');
 const updater = require('./updater');
 const { DiscordPresence } = require('./discord');
 const { TrayController } = require('./tray');
+const { createDesktopIntegration } = require('./desktop-integration');
 const {
   startBrowserAuth,
   stopBrowserAuth,
@@ -33,6 +37,8 @@ const {
 
 const APP_ID = 'com.ytmusicdesktop.app';
 const PARTITION = 'persist:ytmusic';
+const APP_ENTRY_PATH = path.join(__dirname, '../renderer/index.html');
+const APP_ENTRY_URL = pathToFileURL(APP_ENTRY_PATH).href;
 const IS_DEV = process.argv.includes('--dev');
 const SCREENSHOT_PATH = getArgValue('--screenshot=');
 const DUMP_DOM_PATH = getArgValue('--dump-dom=');
@@ -40,6 +46,7 @@ const OPEN_DRAWER = getArgValue('--open-drawer=');
 const AUTOPLAY_TEST = process.argv.includes('--autoplay-test');
 const CLICK_SIGNIN_TEST = process.argv.includes('--click-signin-test');
 const BROWSER_AUTH_TEST = process.argv.includes('--browser-auth-test');
+const START_HIDDEN = process.argv.includes('--hidden');
 const DUMP_DELAY = Math.max(1500, Number(getArgValue('--dump-delay=')) || 4000);
 const SCREENSHOT_DELAY = Math.max(3000, Number(getArgValue('--screenshot-delay=')) || 6500);
 const WATCHDOG_DISABLED = IS_DEV
@@ -111,6 +118,8 @@ let tray = null;
 let discord = null;
 let isQuitting = false;
 let powerBlockerId = null;
+let downloadPowerBlockerId = null;
+let downloadBlockerTimer = null;
 let lastPlayerState = null;
 let boundsTimer = null;
 let debugScheduled = false;
@@ -135,6 +144,8 @@ let watchdogProcess = null;
 let watchdogHeartbeatPath = '';
 let watchdogHeartbeatTimer = null;
 let watchdogHeartbeatWriting = false;
+let blockedRequestCount = 0;
+let desktopIntegration = null;
 
 app.setName('YT Music Desktop');
 
@@ -153,6 +164,14 @@ protocol.registerSchemesAsPrivileged([
 function getArgValue(prefix) {
   const arg = process.argv.find((value) => value.startsWith(prefix));
   return arg ? arg.slice(prefix.length) : '';
+}
+
+function appExecutablePath() {
+  return String(process.env.PORTABLE_EXECUTABLE_FILE || '').trim() || process.execPath;
+}
+
+function relaunchArgs() {
+  return process.env.PORTABLE_EXECUTABLE_FILE ? [] : process.argv.slice(1);
 }
 
 function sendToRenderer(channel, payload) {
@@ -258,7 +277,7 @@ function showRecoveryDialog() {
     recoveryDialogOpen = false;
     recoveryDialogSnoozeUntil = Date.now() + 60 * 1000;
     if (response === 0) {
-      app.relaunch();
+      app.relaunch({ execPath: appExecutablePath(), args: relaunchArgs() });
       quitApp();
     }
   }).catch(() => {
@@ -459,7 +478,11 @@ function startHealthWatchdog() {
   healthCheckInterval = setInterval(() => {
     if (isQuitting || !deliverableWindow()) return;
     if (!mainWindow.isVisible() || mainWindow.isMinimized()) return;
-    if (mainWindow.webContents.isLoading()) return;
+    const loading = mainWindow.webContents.isLoading();
+    const loadingTooLong = loading
+      && windowLoadStartedAt
+      && Date.now() - windowLoadStartedAt > 30000;
+    if (loading && !loadingTooLong) return;
     if (Date.now() - lastHeartbeatAt < HEARTBEAT_STALE_MS) return;
     if (healthCheckRunning) return;
     scheduleHealthCheck('heartbeat', 0);
@@ -518,6 +541,9 @@ function startProcessWatchdog() {
     const scriptPath = path.join(__dirname, 'watchdog.js');
     const appArgs = process.argv.slice(1);
     const encodedArgs = Buffer.from(JSON.stringify(appArgs), 'utf8').toString('base64');
+    const watchdogCwd = process.env.PORTABLE_EXECUTABLE_FILE
+      ? path.dirname(appExecutablePath())
+      : process.cwd();
 
     // Write the first beat synchronously so the watchdog does not count app
     // startup time as a hang.
@@ -527,10 +553,10 @@ function startProcessWatchdog() {
     const child = spawn(process.execPath, [
       scriptPath,
       String(process.pid),
-      process.execPath,
+      appExecutablePath(),
       watchdogHeartbeatPath,
       encodedArgs,
-      process.cwd()
+      watchdogCwd
     ], {
       detached: true,
       stdio: 'ignore',
@@ -690,8 +716,8 @@ function openExternal(url) {
 function getWindowBounds(saved) {
   const width = Math.max(960, Math.min(5000, Math.round(Number(saved.width) || 1280)));
   const height = Math.max(620, Math.min(3500, Math.round(Number(saved.height) || 820)));
-  const x = Number(saved.x);
-  const y = Number(saved.y);
+  const x = saved.x === null || saved.x === undefined ? Number.NaN : Number(saved.x);
+  const y = saved.y === null || saved.y === undefined ? Number.NaN : Number(saved.y);
 
   if (Number.isFinite(x) && Number.isFinite(y)) {
     const displays = screen.getAllDisplays();
@@ -734,6 +760,7 @@ function setupAdBlock(ses) {
 
   ses.webRequest.onBeforeRequest({ urls: AD_URL_PATTERNS }, (details, callback) => {
     if (config.get().blockAds) {
+      blockedRequestCount += 1;
       if (IS_DEV) console.log('[adblock] blocked', details.url);
       callback({ cancel: true });
       return;
@@ -778,6 +805,18 @@ function setupMediaProtocol() {
         flac: 'audio/flac'
       }[path.extname(file).replace('.', '').toLowerCase()] || 'application/octet-stream';
 
+      if (request.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            'content-type': mime,
+            'content-length': String(stat.size),
+            'accept-ranges': 'bytes',
+            'cache-control': 'no-store'
+          }
+        });
+      }
+
       const range = request.headers.get('range');
       if (range) {
         const match = /bytes=(\d*)-(\d*)/i.exec(range);
@@ -790,12 +829,12 @@ function setupMediaProtocol() {
               headers: { 'content-range': `bytes */${stat.size}` }
             });
           }
-          const data = fs.readFileSync(file).subarray(start, end + 1);
-          return new Response(data, {
+          const stream = fs.createReadStream(file, { start, end });
+          return new Response(Readable.toWeb(stream), {
             status: 206,
             headers: {
               'content-type': mime,
-              'content-length': String(data.length),
+              'content-length': String(end - start + 1),
               'content-range': `bytes ${start}-${end}/${stat.size}`,
               'accept-ranges': 'bytes',
               'cache-control': 'no-store'
@@ -804,12 +843,11 @@ function setupMediaProtocol() {
         }
       }
 
-      const data = fs.readFileSync(file);
-      return new Response(data, {
+      return new Response(Readable.toWeb(fs.createReadStream(file)), {
         status: 200,
         headers: {
           'content-type': mime,
-          'content-length': String(data.length),
+          'content-length': String(stat.size),
           'accept-ranges': 'bytes',
           'cache-control': 'no-store'
         }
@@ -822,10 +860,16 @@ function setupMediaProtocol() {
 }
 
 function handleShortcut(event, input, contents) {
-  if (!input || input.type !== 'keyDown') return;
+  if (!input || input.type !== 'keyDown' || input.isAutoRepeat) return;
   const ctrl = input.control || input.meta;
   const key = String(input.key || '').toLowerCase();
 
+  if (input.key === 'Escape') {
+    // Let the page keep its own Escape behavior (closing menus), but also tell
+    // the chrome to close any drawer/dialog it owns.
+    sendCommand('close-overlay');
+    return;
+  }
   if (ctrl && key === 'l') {
     event.preventDefault();
     sendCommand('toggle-lyrics');
@@ -1125,6 +1169,9 @@ function createWindow() {
     if (params.src && !/^https:\/\/music\.youtube\.com(?:\/|$)/i.test(params.src)) {
       event.preventDefault();
     }
+    if (params.partition && params.partition !== PARTITION) {
+      event.preventDefault();
+    }
   });
 
   mainWindow.webContents.on('did-attach-webview', (event, contents) => {
@@ -1136,10 +1183,11 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('file://')) {
-      event.preventDefault();
-      openExternal(url);
+    if (url === APP_ENTRY_URL || url.startsWith(`${APP_ENTRY_URL}#`) || url.startsWith(`${APP_ENTRY_URL}?`)) {
+      return;
     }
+    event.preventDefault();
+    if (!url.startsWith('file://')) openExternal(url);
   });
   mainWindow.webContents.on('before-input-event', (event, input) => handleShortcut(event, input, null));
   mainWindow.webContents.on('render-process-gone', (event, details) => {
@@ -1191,6 +1239,10 @@ function createWindow() {
 
   mainWindow.once('ready-to-show', () => {
     if (saved.maximized) mainWindow.maximize();
+    if (START_HIDDEN) {
+      if (tray) tray.setVisible(false);
+      return;
+    }
     mainWindow.show();
     if (tray) tray.setVisible(true);
   });
@@ -1268,13 +1320,154 @@ function handlePlayerState(raw) {
     videoId: String(raw.videoId || '').slice(0, 50),
     url: String(raw.url || '').slice(0, 1000),
     isAd: Boolean(raw.isAd),
-    seeked: Boolean(raw.seeked)
+    seeked: Boolean(raw.seeked),
+    source: raw.source === 'local' ? 'local' : 'remote'
   };
 
   lastPlayerState = state;
   if (tray) tray.update(state);
   if (discord) discord.setState(state);
+  if (desktopIntegration) {
+    desktopIntegration.update(state);
+    desktopIntegration.notifyTrackChange(state, Boolean(config.get().notifications));
+  }
   updatePowerBlocker(state);
+}
+
+async function refreshDownloadPowerBlocker() {
+  if (!downloads || typeof downloads.getStatus !== 'function') return;
+  let status;
+  try {
+    status = await downloads.getStatus();
+  } catch (error) {
+    return;
+  }
+  const active = Boolean(
+    status
+    && ((Array.isArray(status.active) && status.active.length) || status.batch)
+  );
+  if (active && downloadPowerBlockerId === null) {
+    try {
+      downloadPowerBlockerId = powerSaveBlocker.start('prevent-app-suspension');
+    } catch (error) {}
+  } else if (!active && downloadPowerBlockerId !== null) {
+    try {
+      powerSaveBlocker.stop(downloadPowerBlockerId);
+    } catch (error) {}
+    downloadPowerBlockerId = null;
+  }
+}
+
+function scheduleDownloadPowerBlocker() {
+  if (downloadBlockerTimer) clearTimeout(downloadBlockerTimer);
+  downloadBlockerTimer = setTimeout(() => {
+    downloadBlockerTimer = null;
+    refreshDownloadPowerBlocker().catch(() => {});
+  }, 500);
+}
+
+function handleDownloadDesktopEvent(payload) {
+  if (!payload || !payload.type) return;
+  if (['start', 'batch-start', 'complete', 'batch-complete', 'error', 'batch-error', 'cancelled'].includes(payload.type)) {
+    scheduleDownloadPowerBlocker();
+  }
+  if (!desktopIntegration) return;
+  const completeIcon = path.join(__dirname, '../../assets/overlays/complete.png');
+  const errorIcon = path.join(__dirname, '../../assets/overlays/error.png');
+
+  switch (payload.type) {
+    case 'start':
+      if (!payload.batchId) desktopIntegration.setDownloadProgress(0, 'normal');
+      break;
+    case 'progress':
+      if (!payload.batchId) {
+        desktopIntegration.setDownloadProgress(Number(payload.percent) || 0, 'normal');
+      }
+      break;
+    case 'batch-start':
+      desktopIntegration.setDownloadProgress(0, 'normal');
+      break;
+    case 'batch-progress': {
+      const total = Number(payload.total) || 0;
+      const completed = Number(payload.completed) || 0;
+      desktopIntegration.setDownloadProgress(total ? (completed / total) * 100 : 0, 'normal');
+      break;
+    }
+    case 'complete':
+      if (!payload.batchId) {
+        desktopIntegration.setDownloadProgress(100, 'normal');
+        desktopIntegration.setOverlayIcon(completeIcon, 'Download complete');
+        setTimeout(() => desktopIntegration && desktopIntegration.setOverlayIcon(null, ''), 6000);
+        setTimeout(() => desktopIntegration && desktopIntegration.setDownloadProgress(0, 'none'), 2500);
+        if (payload.item) {
+          desktopIntegration.notifyDownload({
+            type: 'complete',
+            title: 'Download complete',
+            body: [payload.item.artist, payload.item.title].filter(Boolean).join(' — '),
+            enabled: Boolean(config.get().notifications)
+          });
+        }
+      }
+      desktopIntegration.refresh();
+      break;
+    case 'batch-complete':
+      desktopIntegration.setDownloadProgress(0, 'none');
+      desktopIntegration.setOverlayIcon(completeIcon, 'Playlist download complete');
+      setTimeout(() => desktopIntegration && desktopIntegration.setOverlayIcon(null, ''), 8000);
+      desktopIntegration.notifyDownload({
+        type: 'batch-complete',
+        title: 'Playlist download complete',
+        body: `${payload.saved || 0} of ${payload.total || 0} tracks saved${payload.failed ? `, ${payload.failed} failed` : ''}.`,
+        enabled: Boolean(config.get().notifications)
+      });
+      desktopIntegration.refresh();
+      break;
+    case 'error':
+      if (payload.batchId) break;
+      desktopIntegration.setDownloadProgress(100, 'error');
+      desktopIntegration.setOverlayIcon(errorIcon, 'Download failed');
+      setTimeout(() => desktopIntegration && desktopIntegration.setOverlayIcon(null, ''), 8000);
+      setTimeout(() => desktopIntegration && desktopIntegration.setDownloadProgress(0, 'none'), 5000);
+      desktopIntegration.notifyDownload({
+        type: 'error',
+        title: 'Download failed',
+        body: payload.message || 'The download could not be completed.',
+        enabled: Boolean(config.get().notifications)
+      });
+      break;
+    case 'batch-error':
+      desktopIntegration.setDownloadProgress(0, 'none');
+      desktopIntegration.setOverlayIcon(errorIcon, 'Playlist download stopped');
+      setTimeout(() => desktopIntegration && desktopIntegration.setOverlayIcon(null, ''), 8000);
+      desktopIntegration.notifyDownload({
+        type: 'error',
+        title: 'Playlist download stopped',
+        body: payload.message || 'The playlist download could not be completed.',
+        enabled: Boolean(config.get().notifications)
+      });
+      break;
+    case 'cancelled':
+      if (!payload.batchId) desktopIntegration.setDownloadProgress(0, 'none');
+      break;
+    case 'removed':
+      desktopIntegration.refresh();
+      break;
+    default:
+      break;
+  }
+}
+
+function applyLaunchAtLogin(enabled) {
+  if (process.platform !== 'win32' || !app.isPackaged) return;
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(enabled),
+      path: appExecutablePath(),
+      args: ['--hidden']
+    });
+  } catch (error) {
+    console.error('[startup] Could not update login item:', error.message);
+  }
 }
 
 function updatePowerBlocker(state) {
@@ -1294,6 +1487,25 @@ function updatePowerBlocker(state) {
   }
 }
 
+function isMainSender(event) {
+  return Boolean(
+    event
+    && mainWindow
+    && !mainWindow.isDestroyed()
+    && event.sender === mainWindow.webContents
+  );
+}
+
+function handle(channel, listener) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isMainSender(event)) {
+      console.warn('[ipc] Rejected unauthorized call to', channel);
+      return null;
+    }
+    return listener(event, ...args);
+  });
+}
+
 function registerIpc() {
   ipcMain.on('renderer:heartbeat', (event) => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
@@ -1307,9 +1519,9 @@ function registerIpc() {
     scheduleHealthCheck('player-stalled', 400, { force: true });
   });
 
-  ipcMain.handle('settings:get', () => config.get());
+  handle('settings:get', () => config.get());
 
-  ipcMain.handle('settings:update', (event, patch) => {
+  handle('settings:update', (event, patch) => {
     const next = config.update(patch || {});
     if (patch && Object.prototype.hasOwnProperty.call(patch, 'discord') && discord) {
       discord.configure(next.discord);
@@ -1317,58 +1529,103 @@ function registerIpc() {
     if (patch && Object.prototype.hasOwnProperty.call(patch, 'preventSleep')) {
       updatePowerBlocker(lastPlayerState);
     }
+    if (patch && Object.prototype.hasOwnProperty.call(patch, 'launchAtLogin')) {
+      applyLaunchAtLogin(next.launchAtLogin);
+    }
+    if (patch && patch.downloads && Object.prototype.hasOwnProperty.call(patch.downloads, 'dir')
+      && downloads.setDir) {
+      Promise.resolve(downloads.setDir(next.downloads.dir)).catch((error) => {
+        console.error('[downloads] Could not apply the download folder:', error.message);
+      });
+    }
     sendToRenderer('settings:changed', next);
     return next;
   });
 
-  ipcMain.handle('lyrics:fetch', (event, meta, options) => lyrics.fetchLyrics(meta, options || {}));
+  handle('lyrics:fetch', (event, meta, options) => lyrics.fetchLyrics(meta, options || {}));
 
-  ipcMain.handle('sponsorblock:segments', (event, videoId, categories) => (
+  handle('sponsorblock:segments', (event, videoId, categories) => (
     sponsorblock.fetchSegments(videoId, categories)
   ));
 
-  ipcMain.handle('downloads:status', () => downloads.getStatus());
-  ipcMain.handle('downloads:install-tool', () => downloads.installTool());
-  ipcMain.handle('downloads:start', (event, meta, options) => downloads.start(meta, options || {}));
-  ipcMain.handle('downloads:start-many', (event, payload) => downloads.startMany(payload || {}));
-  ipcMain.handle('downloads:list', () => downloads.list());
-  ipcMain.handle('downloads:cancel', (event, id) => downloads.cancel(id));
-  ipcMain.handle('downloads:remove', (event, id) => downloads.remove(id));
-  ipcMain.handle('downloads:open-folder', () => downloads.openFolder());
-  ipcMain.handle('downloads:reveal', (event, id) => downloads.reveal(id));
+  handle('downloads:status', () => downloads.getStatus());
+  handle('downloads:install-tool', () => downloads.installTool());
+  handle('downloads:update-tool', () => downloads.updateTool());
+  handle('downloads:start', (event, meta, options) => downloads.start(meta, options || {}));
+  handle('downloads:retry', (event, meta, options) => downloads.retry(meta, options || {}));
+  handle('downloads:start-many', (event, payload) => downloads.startMany(payload || {}));
+  handle('downloads:list', () => downloads.list());
+  handle('downloads:cancel', (event, id) => downloads.cancel(id));
+  handle('downloads:remove', (event, id) => {
+    const removed = downloads.remove(id);
+    if (removed && desktopIntegration) desktopIntegration.refresh();
+    return removed;
+  });
+  handle('downloads:open-folder', () => downloads.openFolder());
+  handle('downloads:open-log', () => downloads.openLog());
+  handle('downloads:reveal', (event, id) => downloads.reveal(id));
+  handle('downloads:choose-folder', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { ok: false, canceled: true };
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose download folder',
+      properties: ['openDirectory', 'createDirectory'],
+      defaultPath: downloads.getDir ? downloads.getDir() : undefined
+    });
+    if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+      return { ok: false, canceled: true };
+    }
+    try {
+      const requested = path.resolve(result.filePaths[0]);
+      const dir = await downloads.setDir(requested);
+      const normalized = path.resolve(dir);
+      const same = process.platform === 'win32'
+        ? normalized.toLowerCase() === requested.toLowerCase()
+        : normalized === requested;
+      if (!same) {
+        return { ok: false, dir, message: 'That folder could not be used. Choose a writable folder and try again.' };
+      }
+      const current = config.get().downloads || {};
+      config.update({ downloads: { ...current, dir } });
+      return { ok: true, dir, status: await downloads.getStatus() };
+    } catch (error) {
+      return { ok: false, message: error.message };
+    }
+  });
 
-  ipcMain.handle('updater:status', () => updater.getStatus());
-  ipcMain.handle('updater:check', () => updater.check(true));
-  ipcMain.handle('updater:install', () => updater.quitAndInstall());
+  handle('updater:status', () => updater.getStatus());
+  handle('updater:check', () => updater.check(true));
+  handle('updater:install', () => updater.quitAndInstall());
 
-  ipcMain.handle('window:minimize', () => {
+  handle('window:minimize', () => {
     if (mainWindow) mainWindow.minimize();
   });
-  ipcMain.handle('window:toggle-maximize', () => {
+  handle('window:toggle-maximize', () => {
     if (!mainWindow) return false;
     if (mainWindow.isMaximized()) mainWindow.unmaximize();
     else mainWindow.maximize();
     return mainWindow.isMaximized();
   });
-  ipcMain.handle('window:close', () => {
+  handle('window:close', () => {
     if (mainWindow) mainWindow.close();
   });
-  ipcMain.handle('window:is-maximized', () => Boolean(mainWindow && mainWindow.isMaximized()));
+  handle('window:is-maximized', () => Boolean(mainWindow && mainWindow.isMaximized()));
 
-  ipcMain.handle('shell:open-external', (event, url) => {
+  handle('shell:open-external', (event, url) => {
     if (!/^https?:\/\//i.test(String(url || ''))) return false;
     shell.openExternal(url).catch(() => {});
     return true;
   });
 
-  ipcMain.handle('auth:browser-sign-in', () => beginBrowserSignIn());
-  ipcMain.handle('auth:browser-cancel', () => {
-    stopBrowserAuth({ closeBrowser: true });
+  handle('auth:browser-sign-in', () => beginBrowserSignIn());
+  handle('auth:browser-cancel', () => {
+    Promise.resolve(stopBrowserAuth({ closeBrowser: true })).catch((error) => {
+      console.error('[auth] Could not stop browser sign-in:', error.message);
+    });
     sendToRenderer('auth:status', { status: 'cancelled', message: 'Browser sign-in cancelled.' });
     return true;
   });
 
-  ipcMain.handle('session:clear', async () => {
+  handle('session:clear', async () => {
     await clearBrowserSignInProfile();
     const ses = session.fromPartition(PARTITION);
     await ses.clearStorageData();
@@ -1376,7 +1633,7 @@ function registerIpc() {
     return true;
   });
 
-  ipcMain.handle('app:info', () => ({
+  handle('app:info', () => ({
     version: app.getVersion(),
     electron: process.versions.electron,
     chrome: process.versions.chrome,
@@ -1385,7 +1642,90 @@ function registerIpc() {
     isDev: IS_DEV
   }));
 
-  ipcMain.handle('app:confirm-signout', async (event) => {
+  handle('app:copy-diagnostics', async () => {
+    const settings = JSON.parse(JSON.stringify(config.get()));
+    if (settings.discord) delete settings.discord.clientId;
+    const status = await downloads.getStatus().catch((error) => ({ error: error.message }));
+    const info = {
+      app: app.getVersion(),
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+      node: process.versions.node,
+      platform: process.platform,
+      arch: process.arch,
+      packaged: app.isPackaged,
+      settings,
+      downloads: status,
+      adBlockBlockedRequests: blockedRequestCount,
+      player: lastPlayerState
+        ? {
+            title: lastPlayerState.title,
+            artist: lastPlayerState.artist,
+            paused: lastPlayerState.paused,
+            isAd: lastPlayerState.isAd
+          }
+        : null
+    };
+    let logs = '';
+    for (const name of ['downloads.log', 'watchdog.log']) {
+      const candidates = [
+        status && status.dir ? path.join(status.dir, name) : '',
+        path.join(app.getPath('userData'), 'downloads', name),
+        path.join(app.getPath('userData'), name)
+      ].filter(Boolean);
+      const file = candidates.find((candidate) => {
+        try { return fs.statSync(candidate).isFile(); } catch { return false; }
+      });
+      if (!file) continue;
+      try {
+        const raw = fs.readFileSync(file, 'utf8');
+        logs += `\n--- ${name} (last 60 lines) ---\n${raw.split(/\r?\n/).slice(-60).join('\n')}\n`;
+      } catch (error) {}
+    }
+    const text = `${JSON.stringify(info, null, 2)}${logs}`;
+    clipboard.writeText(text);
+    return text;
+  });
+
+  handle('app:open-user-data', () => shell.openPath(app.getPath('userData')));
+
+  handle('sleep-timer:get', () => (
+    desktopIntegration ? desktopIntegration.getSleepTimer() : { active: false, endsAt: null, minutes: 0 }
+  ));
+  handle('sleep-timer:start', (event, minutes) => {
+    if (!desktopIntegration) return { active: false, endsAt: null, minutes: 0 };
+    const status = desktopIntegration.startSleepTimer(minutes, () => {
+      if (guestContents && !guestContents.isDestroyed()) {
+        guestContents.executeJavaScript(`(() => {
+          const video = document.querySelector('#movie_player video') || document.querySelector('video');
+          if (video && !video.paused) video.pause();
+          return true;
+        })()`, false).catch(() => {});
+      }
+      sendCommand('sleep-timer-expired');
+      sendToRenderer('sleep-timer:status', { active: false, endsAt: null, minutes: 0 });
+      if (desktopIntegration) {
+        desktopIntegration.notifyDownload({
+          type: 'info',
+          title: 'Sleep timer finished',
+          body: 'Playback was paused.',
+          enabled: Boolean(config.get().notifications)
+        });
+      }
+    });
+    sendToRenderer('sleep-timer:status', status);
+    return status;
+  });
+  handle('sleep-timer:cancel', () => {
+    if (desktopIntegration) desktopIntegration.cancelSleepTimer();
+    const status = desktopIntegration
+      ? desktopIntegration.getSleepTimer()
+      : { active: false, endsAt: null, minutes: 0 };
+    sendToRenderer('sleep-timer:status', status);
+    return status;
+  });
+
+  handle('app:confirm-signout', async (event) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) return false;
     try {
       const { response } = await dialog.showMessageBox(mainWindow, {
@@ -1404,16 +1744,19 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('discord:status', () => {
+  handle('discord:status', () => {
     if (discord) return discord.getStatus();
     return { enabled: false, configured: false, connected: false, error: 'Discord is not initialized.' };
   });
-  ipcMain.handle('discord:reconnect', () => {
+  handle('discord:reconnect', () => {
     if (discord) discord.forceReconnect();
     return discord ? discord.getStatus() : null;
   });
 
-  ipcMain.on('player:state', (event, state) => handlePlayerState(state));
+  ipcMain.on('player:state', (event, state) => {
+    if (!isMainSender(event)) return;
+    handlePlayerState(state);
+  });
 }
 
 function scheduleDebugCapture() {
@@ -1518,7 +1861,8 @@ function createTray() {
       sendCommand('reload-player');
     },
     onCommand: (type) => {
-      if (type === 'toggle-lyrics' || type === 'toggle-equalizer' || type === 'toggle-settings') {
+      if (type === 'toggle-lyrics' || type === 'toggle-equalizer'
+        || type === 'toggle-settings' || type === 'toggle-downloads') {
         showWindowAndSend(type);
       } else {
         sendCommand(type);
@@ -1532,15 +1876,40 @@ function bootstrap() {
   config.init();
   app.setAppUserModelId(APP_ID);
   nativeTheme.themeSource = 'dark';
+  applyLaunchAtLogin(config.get().launchAtLogin);
 
   setupSession();
   registerIpc();
   setupMediaProtocol();
   startProcessWatchdog();
-  downloads.init((payload) => sendToRenderer('downloads:event', payload));
+  downloads.init((payload) => {
+    sendToRenderer('downloads:event', payload);
+    handleDownloadDesktopEvent(payload);
+  });
   updater.init((payload) => sendToRenderer('update:status', payload));
   createWindow();
   createTray();
+
+  desktopIntegration = createDesktopIntegration({
+    getWindow: () => mainWindow,
+    getPlayerState: () => lastPlayerState,
+    sendCommand,
+    showWindow,
+    getRecentDownloads: () => downloads.list(),
+    getDownloadsStatus: () => downloads.getStatus(),
+    notifications: () => Boolean(config.get().notifications),
+    onQuit: quitApp,
+    onOpenDownload: (videoId) => {
+      showWindow();
+      const deliver = () => sendToRenderer('app:command', { type: 'open-download', videoId });
+      if (mainWindow && mainWindow.webContents.isLoading()) {
+        mainWindow.webContents.once('did-finish-load', () => setTimeout(deliver, 150));
+      } else {
+        setTimeout(deliver, 150);
+      }
+    }
+  });
+  desktopIntegration.handleLaunchArgs(process.argv);
 
   powerMonitor.on('suspend', () => {
     clearTimeout(healthCheckTimer);
@@ -1582,7 +1951,10 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => showWindow());
+  app.on('second-instance', (event, argv) => {
+    const handled = desktopIntegration ? desktopIntegration.handleLaunchArgs(argv) : false;
+    if (!handled) showWindow();
+  });
 
   app.whenReady().then(bootstrap).catch((error) => {
     console.error('[app] Failed to start:', error);
@@ -1598,7 +1970,8 @@ app.on('before-quit', () => {
     clearTimeout(boundsTimer);
     boundsTimer = null;
   }
-  stopBrowserAuth({ closeBrowser: true });
+  Promise.resolve(stopBrowserAuth({ closeBrowser: true })).catch(() => {});
+  if (desktopIntegration) desktopIntegration.destroy();
   downloads.shutdown();
   config.flush();
   if (discord) discord.destroy();
@@ -1606,6 +1979,14 @@ app.on('before-quit', () => {
   if (powerBlockerId !== null) {
     powerSaveBlocker.stop(powerBlockerId);
     powerBlockerId = null;
+  }
+  if (downloadBlockerTimer) {
+    clearTimeout(downloadBlockerTimer);
+    downloadBlockerTimer = null;
+  }
+  if (downloadPowerBlockerId !== null) {
+    try { powerSaveBlocker.stop(downloadPowerBlockerId); } catch (error) {}
+    downloadPowerBlockerId = null;
   }
 });
 

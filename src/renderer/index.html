@@ -29,6 +29,13 @@
     <symbol id="i-pause" viewBox="0 0 24 24"><path fill="currentColor" d="M7 5h3.2v14H7zM13.8 5H17v14h-3.2z"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
     <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/><path d="M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path fill="currentColor" d="M6 5h2.4v14H6zM20 5v14l-10-7z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path fill="currentColor" d="M15.6 5H18v14h-2.4zM4 5v14l10-7z"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></symbol>
   </svg>
 
   <div id="app">
@@ -57,6 +64,14 @@
             <button class="download-menu-item" id="menu-download-playlist" role="menuitem" type="button">
               <svg class="icon"><use href="#i-playlist"></use></svg>
               <span><strong>Current playlist</strong><small>Save the playlist or queue</small></span>
+            </button>
+            <button class="download-menu-item" id="menu-play-offline" role="menuitem" type="button" hidden>
+              <svg class="icon"><use href="#i-play"></use></svg>
+              <span><strong>Play offline copy</strong><small>Use the downloaded file instead of streaming</small></span>
+            </button>
+            <button class="download-menu-item" id="menu-open-offline" role="menuitem" type="button">
+              <svg class="icon"><use href="#i-download"></use></svg>
+              <span><strong>Open offline library</strong><small>Browse and search downloaded music</small></span>
             </button>
           </div>
         </div>
@@ -106,12 +121,25 @@
             <div class="lp-artist" id="lp-artist" dir="auto">Playing from downloads</div>
           </div>
           <div class="lp-controls">
-            <button class="lp-btn" id="lp-play" title="Play/Pause" aria-label="Play or pause">
+            <button class="lp-btn" id="lp-shuffle" title="Shuffle downloaded tracks" aria-label="Shuffle downloaded tracks">
+              <svg class="icon"><use href="#i-shuffle"></use></svg>
+            </button>
+            <button class="lp-btn" id="lp-prev" title="Previous downloaded track" aria-label="Previous downloaded track">
+              <svg class="icon"><use href="#i-prev"></use></svg>
+            </button>
+            <button class="lp-btn primary" id="lp-play" title="Play/Pause" aria-label="Play or pause">
               <svg class="icon" id="lp-play-icon"><use href="#i-pause"></use></svg>
+            </button>
+            <button class="lp-btn" id="lp-next" title="Next downloaded track" aria-label="Next downloaded track">
+              <svg class="icon"><use href="#i-next"></use></svg>
+            </button>
+            <button class="lp-btn" id="lp-repeat" title="Repeat current track" aria-label="Repeat current track">
+              <svg class="icon"><use href="#i-repeat"></use></svg>
             </button>
             <button class="lp-btn" id="lp-close" title="Close offline player" aria-label="Close offline player">
               <svg class="icon"><use href="#i-close"></use></svg>
             </button>
+            <span class="lp-queue" id="lp-queue">1 / 1</span>
           </div>
           <div class="lp-seek">
             <span id="lp-current">0:00</span>
@@ -127,12 +155,13 @@
           <div class="error-msg" id="error-msg">Check your internet connection and try again.</div>
           <div class="error-actions">
             <button class="btn primary" id="btn-retry"><svg class="icon"><use href="#i-refresh"></use></svg>Try again</button>
+            <button class="btn ghost" id="btn-open-offline"><svg class="icon"><use href="#i-download"></use></svg>Offline library</button>
             <button class="btn ghost" id="btn-open-browser">Open in browser</button>
           </div>
         </div>
       </section>
 
-      <aside id="drawer" aria-hidden="true">
+      <aside id="drawer" aria-hidden="true" inert>
         <div id="drawer-inner">
           <div class="drawer-tabs">
             <button class="drawer-tab" data-drawer="lyrics">
@@ -254,17 +283,37 @@
                 <div class="panel-title">Offline</div>
                 <div class="panel-sub">Downloaded tracks play without YouTube</div>
               </div>
-              <button class="icon-btn" id="btn-downloads-folder" title="Open downloads folder" aria-label="Open downloads folder">
-                <svg class="icon"><use href="#i-folder"></use></svg>
-              </button>
+              <div class="downloads-head-actions">
+                <button class="icon-btn" id="btn-downloads-refresh" title="Recheck yt-dlp and FFmpeg" aria-label="Recheck tools">
+                  <svg class="icon"><use href="#i-refresh"></use></svg>
+                </button>
+                <button class="icon-btn" id="btn-downloads-log" title="Open download log" aria-label="Open download log">
+                  <svg class="icon"><use href="#i-list"></use></svg>
+                </button>
+                <button class="icon-btn" id="btn-downloads-folder" title="Open downloads folder" aria-label="Open downloads folder">
+                  <svg class="icon"><use href="#i-folder"></use></svg>
+                </button>
+              </div>
             </div>
 
             <div class="downloads-body">
               <div class="downloads-tool" id="downloads-tool">
                 <div class="downloads-tool-text" id="downloads-tool-text">Checking for yt-dlp…</div>
-                <button class="btn small" id="btn-downloads-install" hidden>Install yt-dlp</button>
+                <div class="downloads-tool-actions">
+                  <button class="btn small" id="btn-downloads-install" hidden>Install yt-dlp</button>
+                  <button class="btn small ghost" id="btn-downloads-update" hidden>Update yt-dlp</button>
+                  <button class="btn small ghost" id="btn-downloads-ffmpeg" hidden>Get FFmpeg</button>
+                </div>
               </div>
-              <div class="downloads-last-error" id="downloads-last-error" hidden></div>
+              <div class="downloads-folder-row">
+                <svg class="icon"><use href="#i-folder"></use></svg>
+                <span class="downloads-folder-path" id="downloads-folder-path" dir="auto">Downloads folder</span>
+                <button class="link-btn" id="btn-downloads-choose-folder">Change</button>
+              </div>
+              <div class="downloads-last-error" id="downloads-last-error" hidden>
+                <span id="downloads-last-error-text"></span>
+                <button class="btn small ghost" id="btn-downloads-retry" type="button">Retry</button>
+              </div>
 
               <div class="downloads-actions">
                 <button class="btn primary wide" id="btn-download-current">
@@ -277,8 +326,30 @@
 
               <div class="downloads-progress" id="downloads-progress" hidden>
                 <div class="downloads-progress-bar"><span id="downloads-progress-fill"></span></div>
-                <div class="downloads-progress-text" id="downloads-progress-text"></div>
+                <div class="downloads-progress-row">
+                  <div class="downloads-progress-text" id="downloads-progress-text"></div>
+                  <button class="btn small ghost" id="btn-cancel-downloads" type="button">Cancel</button>
+                </div>
               </div>
+
+              <div class="downloads-filter-row">
+                <label class="downloads-search">
+                  <svg class="icon"><use href="#i-search"></use></svg>
+                  <input class="input" id="downloads-search" type="search" placeholder="Search downloaded music" autocomplete="off" spellcheck="false" aria-label="Search downloaded music">
+                </label>
+                <select class="select compact" id="downloads-filter" aria-label="Filter downloads">
+                  <option value="all">All</option>
+                  <option value="audio">Audio</option>
+                  <option value="video">Video</option>
+                </select>
+                <select class="select compact" id="downloads-sort" aria-label="Sort downloads">
+                  <option value="newest">Newest</option>
+                  <option value="title">Title</option>
+                  <option value="artist">Artist</option>
+                  <option value="size">Largest</option>
+                </select>
+              </div>
+              <div class="downloads-summary" id="downloads-summary"></div>
 
               <div class="downloads-list" id="downloads-list"></div>
               <div class="downloads-empty" id="downloads-empty">
@@ -381,13 +452,93 @@
               </div>
 
               <div class="setting-section">
-                <h3>Window</h3>
+                <h3>Downloads</h3>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Download folder</div>
+                    <div class="setting-desc" id="set-download-dir">Loading…</div>
+                  </div>
+                  <button class="btn small" id="btn-set-download-dir">Change</button>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">MP3 quality</div>
+                    <div class="setting-desc">Bitrate used when converting audio to MP3.</div>
+                  </div>
+                  <select class="select compact" id="set-audio-quality" aria-label="MP3 quality">
+                    <option value="best">Best (V0)</option>
+                    <option value="320">320 kbps</option>
+                    <option value="256">256 kbps</option>
+                    <option value="192">192 kbps</option>
+                    <option value="128">128 kbps</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Video quality</div>
+                    <div class="setting-desc">Maximum resolution for MP4 downloads.</div>
+                  </div>
+                  <select class="select compact" id="set-video-quality" aria-label="Video quality">
+                    <option value="best">Best available</option>
+                    <option value="1080">1080p</option>
+                    <option value="720">720p</option>
+                    <option value="480">480p</option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Embed tags and cover art</div>
+                    <div class="setting-desc">Writes title, artist, album, and artwork into downloaded files. Requires FFmpeg.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-embed-metadata"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Cut SponsorBlock segments from downloads</div>
+                    <div class="setting-desc">Removes the same community-marked segments you skip during playback. Requires FFmpeg.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-download-sponsorblock"><span></span></label>
+                </div>
+              </div>
+
+              <div class="setting-section">
+                <h3>Desktop</h3>
                 <div class="setting-row">
                   <div>
                     <div class="setting-label">Close to tray</div>
                     <div class="setting-desc">Keep music playing when the window is closed.</div>
                   </div>
                   <label class="switch"><input type="checkbox" id="set-close-to-tray"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Start with Windows</div>
+                    <div class="setting-desc">Launch hidden in the tray when you sign in.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-launch-at-login"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Track notifications</div>
+                    <div class="setting-desc">Show a Windows notification when the track changes while the app is hidden.</div>
+                  </div>
+                  <label class="switch"><input type="checkbox" id="set-notifications"><span></span></label>
+                </div>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Sleep timer</div>
+                    <div class="setting-desc" id="sleep-timer-status">Pause playback automatically.</div>
+                  </div>
+                  <div class="sleep-timer-controls">
+                    <select class="select compact" id="set-sleep-timer" aria-label="Sleep timer length">
+                      <option value="15">15 min</option>
+                      <option value="30">30 min</option>
+                      <option value="45">45 min</option>
+                      <option value="60">60 min</option>
+                      <option value="90">90 min</option>
+                    </select>
+                    <button class="btn small" id="btn-sleep-timer">Start</button>
+                  </div>
                 </div>
               </div>
 
@@ -457,6 +608,26 @@
                   <button class="btn small" id="btn-check-updates">Check</button>
                 </div>
                 <button class="btn primary wide" id="btn-install-update" hidden>Restart &amp; install update</button>
+                <div class="setting-row">
+                  <div>
+                    <div class="setting-label">Diagnostics</div>
+                    <div class="setting-desc">Copy app, tool, and download status for a bug report.</div>
+                  </div>
+                  <div class="diagnostics-actions">
+                    <button class="btn small" id="btn-copy-diagnostics"><svg class="icon"><use href="#i-copy"></use></svg>Copy</button>
+                    <button class="btn small ghost" id="btn-open-app-data">Open folder</button>
+                  </div>
+                </div>
+                <details class="discord-box shortcuts-box">
+                  <summary>Keyboard shortcuts</summary>
+                  <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>L</kbd><span>Lyrics</span></div>
+                  <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>E</kbd><span>Equalizer</span></div>
+                  <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>,</kbd><span>Settings</span></div>
+                  <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>D</kbd><span>Download current track</span></div>
+                  <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>O</kbd><span>Offline library</span></div>
+                  <div class="shortcut-row"><kbd>Ctrl</kbd><kbd>R</kbd><span>Reload player</span></div>
+                  <div class="shortcut-row"><kbd>F11</kbd><span>Fullscreen</span></div>
+                </details>
               </div>
             </div>
           </section>
@@ -473,11 +644,18 @@
       <div class="download-modal-title" id="download-format-title">Download</div>
       <div class="download-modal-sub" id="download-format-sub">Choose a format.</div>
       <div class="download-format-options">
+        <button class="download-format-option" data-format="m4a" type="button">
+          <span class="download-format-icon"><svg class="icon"><use href="#i-music"></use></svg></span>
+          <span class="download-format-copy">
+            <span class="download-format-name">M4A</span>
+            <span class="download-format-desc">Original audio · no conversion</span>
+          </span>
+        </button>
         <button class="download-format-option" data-format="mp3" type="button">
           <span class="download-format-icon"><svg class="icon"><use href="#i-music"></use></svg></span>
           <span class="download-format-copy">
             <span class="download-format-name">MP3</span>
-            <span class="download-format-desc">Audio only · smaller file</span>
+            <span class="download-format-desc">Audio only · universal format</span>
           </span>
         </button>
         <button class="download-format-option" data-format="mp4" type="button">
@@ -489,7 +667,36 @@
         </button>
       </div>
       <div class="download-format-note" id="download-format-note" hidden></div>
-      <button class="btn ghost" id="download-format-cancel" type="button">Cancel</button>
+      <details class="download-advanced" id="download-advanced">
+        <summary>Download options</summary>
+        <div class="download-advanced-grid">
+          <label class="download-option audio-option">
+            <span>MP3 bitrate</span>
+            <select class="select compact" id="download-audio-quality">
+              <option value="best">Best (V0)</option>
+              <option value="320">320 kbps</option>
+              <option value="256">256 kbps</option>
+              <option value="192">192 kbps</option>
+              <option value="128">128 kbps</option>
+            </select>
+          </label>
+          <label class="download-option video-option">
+            <span>Video quality</span>
+            <select class="select compact" id="download-video-quality">
+              <option value="best">Best available</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+            </select>
+          </label>
+        </div>
+        <label class="check-row"><input type="checkbox" id="download-embed-metadata"><span>Embed tags and cover art (needs FFmpeg)</span></label>
+        <label class="check-row"><input type="checkbox" id="download-sponsorblock"><span>Cut SponsorBlock segments (needs FFmpeg)</span></label>
+      </details>
+      <div class="download-modal-actions">
+        <button class="btn ghost" id="download-format-cancel" type="button">Cancel</button>
+        <button class="btn primary" id="download-format-confirm" type="button"><svg class="icon"><use href="#i-download"></use></svg>Download</button>
+      </div>
     </div>
   </div>
 

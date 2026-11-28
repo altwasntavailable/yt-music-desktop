@@ -15,6 +15,7 @@ class TrayController {
     this.state = null;
     this.visible = true;
     this.menu = null;
+    this.signature = '';
 
     const image = nativeImage.createFromPath(options.iconPath);
     if (image.isEmpty()) {
@@ -36,6 +37,11 @@ class TrayController {
 
   update(state) {
     this.state = state || null;
+    const next = state
+      ? `${state.title || ''}|${state.artist || ''}|${state.paused ? '1' : '0'}|${state.isAd ? '1' : '0'}`
+      : '';
+    if (next === this.signature) return;
+    this.signature = next;
     this.rebuild();
   }
 
@@ -51,7 +57,17 @@ class TrayController {
     this.tray.setToolTip(truncate(tooltip, 120));
 
     const paused = !state || state.paused;
-    const template = [
+    const template = [];
+
+    if (title) {
+      template.push({
+        label: truncate(`${title}${artist ? ` — ${artist}` : ''}`, 80),
+        enabled: false
+      });
+      template.push({ type: 'separator' });
+    }
+
+    template.push(
       {
         label: this.visible ? 'Hide YT Music' : 'Show YT Music',
         click: () => {
@@ -86,6 +102,15 @@ class TrayController {
       },
       { type: 'separator' },
       {
+        label: 'Offline downloads',
+        click: () => this.options.onCommand('toggle-downloads')
+      },
+      {
+        label: 'Download current track',
+        click: () => this.options.onCommand('download-current')
+      },
+      { type: 'separator' },
+      {
         label: 'Lyrics',
         click: () => this.options.onCommand('toggle-lyrics')
       },
@@ -102,7 +127,7 @@ class TrayController {
         label: 'Quit YT Music',
         click: () => this.options.onQuit()
       }
-    ];
+    );
 
     this.menu = Menu.buildFromTemplate(template);
     this.tray.setContextMenu(this.menu);

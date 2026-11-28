@@ -8,23 +8,55 @@ const { spawn, execFile } = require('child_process');
 const { promisify } = require('util');
 const { app, net, shell } = require('electron');
 
+const config = require('./config');
+const {
+  FORMATS,
+  AUDIO_FORMATS,
+  QUALITY_VALUES,
+  VIDEO_QUALITY_VALUES,
+  sanitizeMeta,
+  normalizeFormat,
+  normalizeQuality,
+  normalizeVideoQuality,
+  buildBaseName,
+  isRetryableFailure,
+  isTaggingFailure,
+  parseYtdlpChecksum,
+  sanitizeSponsorBlockCategories,
+  buildDownloadArgs
+} = require('./download-utils');
+
 const execFileAsync = promisify(execFile);
 
 const YTDLP_WIN_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
 const YTDLP_SUMS_URL = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS';
 const PROBE_CACHE_MS = 30 * 1000;
 const MAX_PLAYLIST_ITEMS = 500;
-const FORMATS = new Set(['mp3', 'mp4']);
+const INDEX_FILE = 'downloads-index.json';
+const LEGACY_INDEX_FILE = 'downloads.json';
+
+const TEMP_FILE_RE = /\.(part|ytdl|temp)(?:$|[.-])|\.frag\d+$/i;
+const INTERMEDIATE_STREAM_RE = /\.f\d+[a-z0-9_-]*\./i;
+const MEDIA_EXTENSIONS = new Set([
+  'mp3', 'm4a', 'mp4', 'm4v', 'webm', 'opus', 'ogg', 'oga',
+  'aac', 'flac', 'wav', 'mkv', 'mov', '3gp', 'avi'
+]);
+
+const TOOL_INSTALL_TIMEOUT_MS = 3 * 60 * 1000;
+const TOOL_VERIFY_TIMEOUT_MS = 60 * 1000;
 
 let onEvent = () => {};
 let jobs = new Map();
 let index = [];
 let initialized = false;
+let downloadDirValue = '';
 let probeCache = { at: 0, tool: null };
 let probePromise = null;
 let ffmpegCache = { at: 0, tool: null };
 let ffmpegPromise = null;
 let installing = false;
+let updating = false;
+let shuttingDown = false;
 let batch = null;
 let batchCounter = 0;
 let lastError = null;
@@ -37,12 +69,21 @@ function emit(payload) {
   }
 }
 
-function downloadDir() {
+function samePath(left, right) {
+  if (!left || !right) return false;
+  const a = path.resolve(String(left));
+  const b = path.resolve(String(right));
+  return process.platform === 'win32'
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b;
+}
+
+function defaultDownloadDir() {
   return path.join(app.getPath('userData'), 'downloads');
 }
 
 function indexPath() {
-  return path.join(downloadDir(), 'downloads.json');
+  return path.join(app.getPath('userData'), INDEX_FILE);
 }
 
 function toolsDir() {
@@ -53,60 +94,153 @@ function bundledToolPath() {
   return path.join(toolsDir(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
 }
 
-function readIndex() {
+function normalizeDirCandidate(value) {
+  const raw = String(value == null ? '' : value).trim().replace(/^"(.*)"$/, '$1').trim();
+  if (!raw) return defaultDownloadDir();
+  if (!path.isAbsolute(raw)) return '';
+  return path.normalize(raw);
+}
+
+function ensureUsableDir(dir) {
+  if (!dir || !path.isAbsolute(dir)) return false;
   try {
-    const raw = fs.readFileSync(indexPath(), 'utf8');
-    const parsed = JSON.parse(raw);
-    index = Array.isArray(parsed) ? parsed.filter((item) => item && item.id) : [];
+    fs.mkdirSync(dir, { recursive: true });
+    if (!fs.statSync(dir).isDirectory()) return false;
+    const probe = path.join(dir, `.ytmd-write-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+    fs.writeFileSync(probe, 'ok', 'utf8');
+    fs.unlinkSync(probe);
+    return true;
   } catch (error) {
-    index = [];
+    return false;
   }
+}
 
-  // Drop entries whose file vanished from disk and migrate older
-  // video-ID filenames to readable Artist - Title names.
-  const dir = downloadDir();
-  const kept = [];
-  let migrated = false;
+function downloadSettings() {
+  try {
+    const settings = config.get() || {};
+    const nested = settings.downloads;
+    return nested && typeof nested === 'object' ? nested : {};
+  } catch (error) {
+    return {};
+  }
+}
 
-  for (const item of index) {
-    const file = path.join(dir, path.basename(String(item.file || '')));
-    if (!item.file || !fs.existsSync(file)) continue;
-
-    let migratedFile = file;
-    try {
-      const currentName = path.basename(file);
-      const ext = path.extname(currentName);
-      const stem = currentName.slice(0, -ext.length);
-      if (ext && stem.toLowerCase() === String(item.videoId || '').toLowerCase()) {
-        const base = buildBaseName(item);
-        let candidate = `${base}${ext}`;
-        let number = 2;
-        while (fs.existsSync(path.join(dir, candidate))) {
-          candidate = number === 2
-            ? `${base} [${item.videoId}]${ext}`
-            : `${base} [${item.videoId}] (${number - 1})${ext}`;
-          number += 1;
-        }
-        const target = path.join(dir, candidate);
-        fs.renameSync(file, target);
-        migratedFile = target;
-        migrated = true;
-      }
-    } catch (error) {
-      // If a file is locked or cannot be renamed, keep its existing name.
+function configuredDownloadDir() {
+  try {
+    const settings = config.get() || {};
+    // The settings UI stores the folder under downloads.dir; downloadDir is
+    // the older/flat key. Support both so neither writer wins by accident.
+    const nested = settings.downloads;
+    const nestedDir = nested && typeof nested.dir === 'string' ? nested.dir : '';
+    if (nestedDir) {
+      const resolved = normalizeDirCandidate(nestedDir);
+      if (resolved) return resolved;
     }
+    return normalizeDirCandidate(settings.downloadDir);
+  } catch (error) {
+    return defaultDownloadDir();
+  }
+}
 
-    kept.push({ ...item, file: migratedFile });
+function resolveDownloadOptions(options = {}) {
+  const opts = options && typeof options === 'object' ? options : {};
+  const settings = downloadSettings();
+  const qualityValue = opts.quality !== undefined
+    ? opts.quality
+    : (opts.audioQuality !== undefined ? opts.audioQuality : settings.audioQuality);
+  const videoQualityValue = opts.videoQuality !== undefined
+    ? opts.videoQuality
+    : settings.videoQuality;
+  const embedMetadataValue = opts.embedMetadata !== undefined
+    ? opts.embedMetadata
+    : settings.embedMetadata;
+  const embedThumbnailValue = opts.embedThumbnail !== undefined
+    ? opts.embedThumbnail
+    : settings.embedThumbnail;
+  const sponsorValue = opts.sponsorblock !== undefined
+    ? opts.sponsorblock
+    : (opts.cutSponsorBlock !== undefined ? opts.cutSponsorBlock : settings.cutSponsorBlock);
+
+  return {
+    quality: normalizeQuality(qualityValue),
+    videoQuality: normalizeVideoQuality(videoQualityValue),
+    embedMetadata: embedMetadataValue !== false,
+    embedThumbnail: embedThumbnailValue !== false,
+    sponsorblock: Boolean(sponsorValue)
+  };
+}
+
+function resolveInitialDir() {
+  const desired = configuredDownloadDir();
+  if (desired && ensureUsableDir(desired)) {
+    return { dir: desired, desired, fellBack: false };
+  }
+  const fallback = defaultDownloadDir();
+  if (ensureUsableDir(fallback)) {
+    return { dir: fallback, desired, fellBack: Boolean(desired) && !samePath(desired, fallback) };
+  }
+  return { dir: fallback, desired, fellBack: Boolean(desired) };
+}
+
+function getDir() {
+  if (downloadDirValue) return downloadDirValue;
+  const resolved = resolveInitialDir();
+  downloadDirValue = resolved.dir;
+  if (resolved.fellBack) {
+    console.error(`[downloads] Could not use download folder "${resolved.desired}"; using ${downloadDirValue}.`);
+  }
+  return downloadDirValue;
+}
+
+function setDir(dir) {
+  const raw = String(dir == null ? '' : dir).trim().replace(/^"(.*)"$/, '$1').trim();
+  const candidate = raw
+    ? (path.isAbsolute(raw) ? path.normalize(raw) : '')
+    : defaultDownloadDir();
+
+  if (candidate && ensureUsableDir(candidate)) {
+    downloadDirValue = candidate;
+    try {
+      config.update({
+        downloadDir: candidate,
+        downloads: { dir: candidate }
+      });
+    } catch (error) {
+      appendLog(`could not persist download folder: ${error.message}`);
+    }
+    appendLog(`download folder set to ${candidate}`);
+    return candidate;
   }
 
-  index = kept;
-  if (migrated) writeIndex();
+  const current = getDir();
+  appendLog(`download folder rejected "${raw}"; keeping ${current}`);
+  return current;
+}
+
+function parseIndexFile(file, fallbackDir, allowRelative = false) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (error) {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  return parsed
+    .filter((item) => item && item.id)
+    .map((item) => {
+      const copy = { ...item };
+      const stored = String(copy.file || '').trim();
+      if (allowRelative && stored && !path.isAbsolute(stored)) {
+        copy.file = path.join(fallbackDir, path.basename(stored));
+      }
+      return copy;
+    });
 }
 
 function writeIndex() {
   try {
-    const dir = downloadDir();
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(path.dirname(indexPath()), { recursive: true });
     const temp = `${indexPath()}.tmp`;
     fs.writeFileSync(temp, JSON.stringify(index, null, 2), 'utf8');
     fs.renameSync(temp, indexPath());
@@ -115,22 +249,183 @@ function writeIndex() {
   }
 }
 
+function migrateLegacyIndex() {
+  try {
+    if (fs.existsSync(indexPath())) return;
+
+    const dirs = [];
+    const seen = new Set();
+    for (const dir of [defaultDownloadDir(), getDir()]) {
+      const key = process.platform === 'win32' ? path.resolve(dir).toLowerCase() : path.resolve(dir);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      dirs.push(dir);
+    }
+
+    for (const dir of dirs) {
+      const legacy = path.join(dir, LEGACY_INDEX_FILE);
+      if (!fs.existsSync(legacy)) continue;
+      const items = parseIndexFile(legacy, dir, true);
+      if (!items.length) continue;
+      index = items;
+      writeIndex();
+      appendLog(`migrated downloads index from ${legacy}`);
+      return;
+    }
+  } catch (error) {
+    // A broken legacy index must not prevent the app from starting.
+  }
+}
+
+function migrateVideoIdFilename(item) {
+  const file = path.resolve(String(item.file || ''));
+  const dir = path.dirname(file);
+  const currentName = path.basename(file);
+  const ext = path.extname(currentName);
+  if (!ext) return '';
+
+  const stem = currentName.slice(0, -ext.length);
+  const videoId = String(item.videoId || item.id || '');
+  if (stem.toLowerCase() !== videoId.toLowerCase()) return '';
+
+  try {
+    const base = buildBaseName(item);
+    let candidate = `${base}${ext}`;
+    let number = 2;
+    while (fs.existsSync(path.join(dir, candidate))) {
+      candidate = number === 2
+        ? `${base} [${videoId}]${ext}`
+        : `${base} [${videoId}] (${number - 1})${ext}`;
+      number += 1;
+    }
+    const target = path.join(dir, candidate);
+    fs.renameSync(file, target);
+    return target;
+  } catch (error) {
+    // If a file is locked or cannot be renamed, keep its existing name.
+    return '';
+  }
+}
+
+function readIndex() {
+  // The stable index must only contain absolute paths. Relative paths are
+  // accepted solely while migrating the legacy downloads.json.
+  const source = parseIndexFile(indexPath(), getDir(), false);
+  const kept = [];
+  let migrated = false;
+
+  for (const entry of source) {
+    const id = String(entry.id || entry.videoId || '').trim();
+    if (!id) continue;
+
+    let file = String(entry.file || '').trim();
+    // Index entries always store absolute paths. A relative path is a legacy
+    // artifact and cannot be trusted.
+    if (!file || !path.isAbsolute(file)) continue;
+    file = path.resolve(file);
+
+    try {
+      if (!fs.statSync(file).isFile()) continue;
+    } catch (error) {
+      // Only forget a file that is definitely gone. A disconnected network
+      // folder or transient permission/AV error must not erase the library.
+      if (isDefinitelyMissing(file)) continue;
+    }
+
+    const item = {
+      ...entry,
+      id,
+      videoId: String(entry.videoId || id),
+      file
+    };
+
+    const renamed = migrateVideoIdFilename(item);
+    if (renamed) {
+      item.file = renamed;
+      migrated = true;
+    }
+
+    if (!Number.isFinite(Number(item.addedAt)) || Number(item.addedAt) <= 0) {
+      try {
+        item.addedAt = Math.round(fs.statSync(item.file).mtimeMs);
+      } catch (error) {
+        item.addedAt = Date.now();
+      }
+    }
+    if (typeof item.playlistTitle !== 'string') item.playlistTitle = '';
+    kept.push(item);
+  }
+
+  index = kept;
+  if (migrated) writeIndex();
+}
+
+function backupCorruptIndex() {
+  const file = indexPath();
+  try {
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(parsed)) throw new Error('index is not an array');
+  } catch (error) {
+    try {
+      const backup = `${file}.broken-${Date.now()}`;
+      fs.renameSync(file, backup);
+      appendLog(`moved corrupt download index to ${backup}: ${error.message}`);
+    } catch (renameError) {
+      appendLog(`could not back up corrupt download index: ${renameError.message}`);
+    }
+  }
+}
+
+function isTempArtifact(name) {
+  return TEMP_FILE_RE.test(String(name || ''));
+}
+
+function isIntermediateStreamFile(name) {
+  return INTERMEDIATE_STREAM_RE.test(String(name || ''));
+}
+
+function isMediaFilename(name) {
+  const ext = path.extname(String(name || '')).replace('.', '').toLowerCase();
+  return MEDIA_EXTENSIONS.has(ext);
+}
+
+function isIntermediateStreamForBase(name, base) {
+  if (!base) return false;
+  const pattern = new RegExp(`^${escapeRegExp(base)}\\.f\\d+[a-z0-9_-]*\\.`, 'i');
+  return pattern.test(String(name || ''));
+}
+
 function init(handler) {
   onEvent = typeof handler === 'function' ? handler : () => {};
   if (initialized) return;
   initialized = true;
-  fs.mkdirSync(downloadDir(), { recursive: true });
+
+  const resolved = resolveInitialDir();
+  downloadDirValue = resolved.dir;
+  try {
+    fs.mkdirSync(downloadDirValue, { recursive: true });
+  } catch (error) {
+    // The folder may become available later.
+  }
+  if (resolved.fellBack) {
+    appendLog(`configured download folder "${resolved.desired}" is not usable; using ${downloadDirValue}`);
+  }
+
+  backupCorruptIndex();
+  migrateLegacyIndex();
   readIndex();
 }
 
 function logPath() {
-  return path.join(downloadDir(), 'downloads.log');
+  return path.join(getDir(), 'downloads.log');
 }
 
 function appendLog(line) {
   try {
+    const dir = getDir();
     const file = logPath();
-    fs.mkdirSync(downloadDir(), { recursive: true });
+    fs.mkdirSync(dir, { recursive: true });
     try {
       if (fs.statSync(file).size > 1024 * 1024) {
         fs.renameSync(file, `${file}.1`);
@@ -143,8 +438,12 @@ function appendLog(line) {
 function recordError(message, meta = {}) {
   const text = String(message || '').trim() || 'Unknown download error.';
   const title = String(meta.title || '').replace(/\s+/g, ' ').trim().slice(0, 150);
-  lastError = { message: text, title, at: Date.now() };
+  lastError = { message: text, title, videoId: meta.videoId || '', at: Date.now() };
   appendLog(`${title ? `[${title}] ` : ''}${text}`);
+  return lastError;
+}
+
+function getLastError() {
   return lastError;
 }
 
@@ -160,7 +459,7 @@ function resolveOnPath(name) {
     for (const extension of extensions) {
       const file = path.join(clean, `${name}${path.extname(name) ? '' : extension}`);
       try {
-        if (fs.existsSync(file) && fs.statSync(file).isFile()) return file;
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) return path.resolve(file);
       } catch (error) {}
     }
   }
@@ -169,9 +468,10 @@ function resolveOnPath(name) {
 
 function resolveToolCandidate(candidate) {
   if (!candidate) return '';
-  if (path.isAbsolute(candidate)) return candidate;
-  if (candidate.includes('/') || candidate.includes('\\')) return path.resolve(candidate);
-  return resolveOnPath(candidate);
+  const value = String(candidate);
+  if (path.isAbsolute(value)) return path.resolve(value);
+  if (value.includes('/') || value.includes('\\')) return path.resolve(value);
+  return resolveOnPath(value);
 }
 
 async function probeTool(force = false) {
@@ -197,14 +497,14 @@ async function probeTool(force = false) {
       const resolved = resolveToolCandidate(candidate);
       if (!resolved) continue;
       try {
-        const { stdout } = await execFileAsync(resolved, ['--version'], {
+        const { stdout } = await execFileAsync(resolved, ['--ignore-config', '--version'], {
           windowsHide: true,
           timeout: 5000,
           encoding: 'utf8'
         });
         const version = String(stdout || '').trim().split(/\r?\n/)[0];
         if (version) {
-          tool = { path: resolved, version };
+          tool = { path: path.resolve(resolved), version };
           break;
         }
       } catch (error) {
@@ -253,7 +553,7 @@ async function probeFfmpeg(force = false) {
         });
         const version = String(stdout || '').trim().split(/\r?\n/)[0];
         if (version) {
-          tool = { path: resolved, version };
+          tool = { path: path.resolve(resolved), version };
           break;
         }
       } catch (error) {
@@ -274,16 +574,29 @@ async function probeFfmpeg(force = false) {
 
 async function getStatus() {
   const [tool, ffmpeg] = await Promise.all([probeTool(), probeFfmpeg()]);
+  const bundled = Boolean(tool && samePath(tool.path, bundledToolPath()));
+  const activeJobs = Array.from(jobs.values());
+  const singleJob = activeJobs.length === 1 ? activeJobs[0] : null;
   return {
     ready: Boolean(tool),
     version: tool ? tool.version : null,
     toolPath: tool ? tool.path : null,
+    canUpdate: bundled,
     ffmpeg: Boolean(ffmpeg),
     ffmpegPath: ffmpeg ? ffmpeg.path : null,
+    ffmpegVersion: ffmpeg ? ffmpeg.version : null,
     installing,
-    dir: downloadDir(),
+    updating,
+    dir: getDir(),
+    defaultDir: defaultDownloadDir(),
+    formats: FORMATS.slice(),
+    qualities: QUALITY_VALUES.slice(),
+    videoQualities: VIDEO_QUALITY_VALUES.slice(),
     count: index.length,
-    active: Array.from(jobs.keys()),
+    active: activeJobs.map((job) => job.id),
+    percent: singleJob
+      ? Math.max(0, Math.min(100, Number(singleJob.percent) || 0))
+      : null,
     lastError,
     batch: batch ? {
       id: batch.id,
@@ -292,87 +605,110 @@ async function getStatus() {
       completed: batch.completed,
       saved: batch.saved,
       failed: batch.failed,
-      skipped: batch.skipped
+      skipped: batch.skipped,
+      format: batch.format,
+      quality: batch.quality,
+      videoQuality: batch.videoQuality,
+      currentId: batch.currentId || '',
+      currentTitle: batch.currentTitle || ''
     } : null
   };
 }
 
 function list() {
+  pruneMissingItems();
   return index.slice().sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
 }
 
+function safeItemFile(item) {
+  if (!item || !item.file) return '';
+  const stored = String(item.file);
+  if (!path.isAbsolute(stored)) return '';
+  try {
+    const file = path.resolve(stored);
+    if (!fs.statSync(file).isFile()) return '';
+    return file;
+  } catch (error) {
+    return '';
+  }
+}
+
+function isDefinitelyMissing(file) {
+  if (!file || !path.isAbsolute(String(file))) return true;
+  try {
+    fs.statSync(String(file));
+    return false;
+  } catch (error) {
+    return error && (error.code === 'ENOENT' || error.code === 'ENOTDIR');
+  }
+}
+
+function dropIndexItem(id, options = {}) {
+  const key = String(id || '');
+  const before = index.length;
+  index = index.filter((item) => item.id !== key);
+  if (index.length === before) return false;
+  if (options.persist !== false) writeIndex();
+  if (options.notify !== false) emit({ type: 'removed', id: key });
+  return true;
+}
+
+// A file can disappear outside the app (Explorer, disk cleanup, moved folder).
+// Drop those entries lazily instead of trusting a stale index forever.
+function pruneMissingItems() {
+  const removed = [];
+  const kept = [];
+  for (const item of index) {
+    if (safeItemFile(item)) {
+      kept.push(item);
+    } else if (isDefinitelyMissing(item.file)) {
+      removed.push(String(item.id));
+    } else {
+      // A locked/disconnected file may come back. Do not erase the entry.
+      kept.push(item);
+    }
+  }
+  if (!removed.length) return removed;
+  index = kept;
+  writeIndex();
+  for (const id of removed) emit({ type: 'removed', id });
+  return removed;
+}
+
 function findItem(id) {
-  return index.find((item) => item.id === id) || null;
+  const key = String(id || '');
+  const item = index.find((entry) => entry.id === key) || null;
+  if (!item) return null;
+  if (safeItemFile(item)) return item;
+  if (!isDefinitelyMissing(item.file)) return item;
+  dropIndexItem(key);
+  return null;
 }
 
 function resolveMedia(id) {
   const item = findItem(String(id || ''));
   if (!item) return null;
-  const dir = downloadDir();
-  const file = path.join(dir, path.basename(item.file));
-  const relative = path.relative(dir, file);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-  if (!fs.existsSync(file)) return null;
+  const file = safeItemFile(item);
+  if (!file) return null;
   return { item, file };
 }
 
-function sanitizeMeta(meta) {
-  const videoId = String((meta && meta.videoId) || '').trim();
-  if (!/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) return null;
-  return {
-    videoId,
-    title: String((meta && meta.title) || 'Unknown title').slice(0, 300),
-    artist: String((meta && meta.artist) || '').slice(0, 300),
-    album: String((meta && meta.album) || '').slice(0, 300),
-    artwork: String((meta && meta.artwork) || '').slice(0, 1000),
-    duration: Number(meta && meta.duration) || 0,
-    url: `https://music.youtube.com/watch?v=${videoId}`
-  };
-}
-
-function normalizeFormat(value) {
-  const format = String(value || '').trim().toLowerCase();
-  return FORMATS.has(format) ? format : 'mp3';
-}
-
-const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
-
-function sanitizeFilenamePart(value, fallback = '') {
-  let name = String(value || '')
-    .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .replace(/[.\s]+$/g, '')
-    .trim();
-  if (!name) name = fallback;
-  if (WINDOWS_RESERVED.test(name)) name = `_${name}`;
-  name = name.slice(0, 110).replace(/[.\s]+$/g, '');
-  return name || fallback;
-}
-
-function buildBaseName(meta) {
-  const artist = sanitizeFilenamePart(meta.artist, '');
-  const title = sanitizeFilenamePart(meta.title, '') || sanitizeFilenamePart(meta.videoId, 'track');
-  const base = artist ? `${artist} - ${title}` : title;
-  return (base.slice(0, 140).replace(/[.\s]+$/g, '') || `track-${meta.videoId}`);
-}
-
-function fileNamesForBase(base) {
+function fileNamesForBase(base, dir = getDir()) {
   try {
-    const dir = downloadDir();
     const prefix = `${base}.`.toLowerCase();
     return fs.readdirSync(dir).filter((name) => (
       name.toLowerCase().startsWith(prefix)
-      && !/\.(part|ytdl|temp)$/i.test(name)
+      && !isTempArtifact(name)
     ));
   } catch (error) {
     return [];
   }
 }
 
-function findFileForBase(base) {
-  const names = fileNamesForBase(base);
+function findFileForBase(base, dir = getDir()) {
+  const names = fileNamesForBase(base, dir)
+    .filter((name) => !isIntermediateStreamForBase(name, base) && isMediaFilename(name));
   if (!names.length) return '';
-  const dir = downloadDir();
   const candidates = names
     .map((name) => path.join(dir, name))
     .filter((file) => {
@@ -393,50 +729,247 @@ function findFileForBase(base) {
   return candidates[0];
 }
 
-function uniqueBaseName(meta) {
+function baseHasFinishedFile(base, dir) {
+  return fileNamesForBase(base, dir)
+    .some((name) => !isIntermediateStreamForBase(name, base) && isMediaFilename(name));
+}
+
+function uniqueBaseName(meta, dir = getDir()) {
   const base = buildBaseName(meta);
   const activeBases = new Set(
     Array.from(jobs.values())
+      .filter((job) => !job.dir || samePath(job.dir, dir))
       .map((job) => String(job.baseName || '').toLowerCase())
       .filter(Boolean)
   );
 
-  if (!fileNamesForBase(base).length && !activeBases.has(base.toLowerCase())) return base;
+  // Interrupted runs leave .part files and completed stream fragments behind.
+  // Reusing the same base lets yt-dlp --continue resume them instead of
+  // starting a second, suffixed download.
+  if (!baseHasFinishedFile(base, dir) && !activeBases.has(base.toLowerCase())) return base;
 
   let candidate = `${base} [${meta.videoId}]`;
   let number = 2;
-  while (fileNamesForBase(candidate).length || activeBases.has(candidate.toLowerCase())) {
+  while (baseHasFinishedFile(candidate, dir) || activeBases.has(candidate.toLowerCase())) {
     candidate = `${base} [${meta.videoId}] (${number})`;
     number += 1;
   }
   return candidate;
 }
 
-function outputTemplate(base) {
-  return path.join(downloadDir(), `${base.replace(/%/g, '%%')}.%(ext)s`);
+function outputTemplate(base, dir = getDir()) {
+  const escapedDir = String(dir).replace(/%/g, '%%');
+  return path.join(escapedDir, `${base.replace(/%/g, '%%')}.%(ext)s`);
 }
 
-function removeFilesForJob(job) {
-  const dir = downloadDir();
-  const bases = new Set();
-  if (job.baseName) bases.add(`${job.baseName}.`.toLowerCase());
-  if (job.meta && job.meta.videoId) bases.add(`${job.meta.videoId}.`.toLowerCase());
+function isResumableArtifact(name) {
+  const value = String(name || '');
+  return /\.part(?:-frag\d+)?$/i.test(value)
+    || /\.ytdl$/i.test(value)
+    || isIntermediateStreamFile(value);
+}
+
+function jobFilePrefixes(job) {
+  const prefixes = new Set();
+  if (job.baseName) {
+    // Match only this job's own stem. A broader `base + " ["` prefix can
+    // match another job whose base was suffixed for a duplicate title.
+    prefixes.add(`${job.baseName}.`.toLowerCase());
+  }
+  if (job.meta && job.meta.videoId) {
+    prefixes.add(`${job.meta.videoId}.`.toLowerCase());
+  }
+  return Array.from(prefixes);
+}
+
+function listJobFiles(job) {
+  const dir = job.dir || getDir();
+  let names = [];
   try {
-    for (const name of fs.readdirSync(dir)) {
-      const lower = name.toLowerCase();
-      for (const prefix of bases) {
-        if (!lower.startsWith(prefix)) continue;
-        try {
-          fs.unlinkSync(path.join(dir, name));
-        } catch (error) {}
-        break;
-      }
-    }
+    names = fs.readdirSync(dir);
+  } catch (error) {
+    return { temp: [], final: [] };
+  }
+
+  const prefixes = jobFilePrefixes(job);
+  const temp = [];
+  const final = [];
+  for (const name of names) {
+    const lower = name.toLowerCase();
+    if (!prefixes.some((prefix) => lower.startsWith(prefix))) continue;
+    const file = path.join(dir, name);
+    if (isTempArtifact(name)) temp.push(file);
+    else final.push(file);
+  }
+  return { temp, final };
+}
+
+function unlinkQuiet(file) {
+  try {
+    fs.unlinkSync(file);
   } catch (error) {}
 }
 
+// mode 'cancel'/'fail': remove everything this job wrote.
+// mode 'fail-keep-partial': keep resumable .part/.ytdl and completed stream
+// fragments, but remove scratch/conversion files. Cancelled jobs are treated
+// as intentional stops and are fully cleaned up.
+function cleanupJobFiles(job, mode) {
+  const { temp, final } = listJobFiles(job);
+
+  if (mode === 'fail-keep-partial') {
+    for (const file of temp) {
+      if (!isResumableArtifact(path.basename(file))) unlinkQuiet(file);
+    }
+    for (const file of final) {
+      if (!isResumableArtifact(path.basename(file))) unlinkQuiet(file);
+    }
+    return { kept: temp.length + final.length, removed: 0 };
+  }
+
+  let removed = 0;
+  for (const file of temp.concat(final)) {
+    try {
+      fs.unlinkSync(file);
+      removed += 1;
+    } catch (error) {}
+  }
+  return { kept: 0, removed };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function cleanupForRetry(meta, dir = getDir()) {
+  const base = buildBaseName(meta);
+  const videoId = String(meta.videoId || '');
+  const baseLower = base.toLowerCase();
+  const videoIdLower = videoId.toLowerCase();
+  const ownedStem = new RegExp(`^${escapeRegExp(baseLower)} \\[${escapeRegExp(videoIdLower)}\\](?: \\(\\d+\\))?$`, 'i');
+
+  let removed = 0;
+  let names = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch (error) {
+    return removed;
+  }
+
+  for (const name of names) {
+    const lower = name.toLowerCase();
+    const temp = isTempArtifact(name);
+    const intermediate = isIntermediateStreamFile(name);
+    const ext = path.extname(name);
+    const stem = ext ? lower.slice(0, -ext.length) : lower;
+    const ownsTemp = (temp || intermediate)
+      && (lower.startsWith(`${baseLower}.`) || lower.startsWith(`${videoIdLower}.`));
+    // Delete files clearly tied to this video id or to the suffixed base.
+    // Do not guess that a plain `Artist - Title.ext` file belongs to this job;
+    // it may be a user's file from another app.
+    const ownsFinal = stem === videoIdLower || ownedStem.test(stem);
+
+    if (!ownsTemp && !ownsFinal) continue;
+    try {
+      fs.unlinkSync(path.join(dir, name));
+      removed += 1;
+    } catch (error) {}
+  }
+
+  if (removed) appendLog(`removed ${removed} stale file(s) before retrying "${meta.title}"`);
+  return removed;
+}
+
+function isUsableFile(file, dir) {
+  if (!file) return '';
+  const raw = String(file).trim().replace(/^"(.*)"$/, '$1');
+  if (!raw || !path.isAbsolute(raw)) return '';
+  try {
+    const resolved = path.resolve(raw);
+    if (dir) {
+      const relative = path.relative(path.resolve(dir), resolved);
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return '';
+    }
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile() || stat.size <= 0) return '';
+    return resolved;
+  } catch (error) {
+    return '';
+  }
+}
+
+function validJobFile(job) {
+  return isUsableFile(job.filePath, job.dir)
+    || isUsableFile(job.finalDestination, job.dir)
+    || isUsableFile(job.existingDestination, job.dir);
+}
+
+function findCompletedFile(job) {
+  let file = findFileForBase(job.baseName, job.dir);
+  if (file) return file;
+
+  try {
+    const match = fs.readdirSync(job.dir).find((name) => (
+      name.toLowerCase().startsWith(`${job.meta.videoId.toLowerCase()}.`)
+      && !isTempArtifact(name)
+      && !isIntermediateStreamForBase(name, job.meta.videoId)
+      && isMediaFilename(name)
+    )) || '';
+    if (match) return path.join(job.dir, match);
+  } catch (error) {}
+  return '';
+}
+
+function lastMeaningfulError(stderr, code, signal) {
+  const lines = String(stderr || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const errorLine = lines.slice().reverse().find((line) => /^(ERROR|WARNING):/i.test(line));
+  return errorLine
+    || lines.slice(-1)[0]
+    || `yt-dlp exited with code ${code}${signal ? ` (${signal})` : ''}.`;
+}
+
+async function sha256File(file) {
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) {
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
+}
+
+async function fetchYtdlpChecksum(signal) {
+  const response = await net.fetch(YTDLP_SUMS_URL, { redirect: 'follow', signal });
+  if (!response.ok) {
+    throw new Error(`Could not verify yt-dlp (checksum list HTTP ${response.status}).`);
+  }
+  const expected = parseYtdlpChecksum(await response.text());
+  if (!expected) {
+    throw new Error('Could not find the yt-dlp.exe checksum.');
+  }
+  return expected;
+}
+
+async function verifyYtdlpBinary(file, signal) {
+  const expected = await fetchYtdlpChecksum(signal);
+  const digest = await sha256File(file);
+  if (signal && signal.aborted) {
+    throw new Error('yt-dlp verification timed out.');
+  }
+  if (digest !== expected) {
+    throw new Error('yt-dlp checksum verification failed.');
+  }
+  return { expected, digest };
+}
+
 async function installTool() {
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
   if (installing) return { ok: false, error: 'already-installing' };
+  if (updating) return { ok: false, error: 'busy', message: 'yt-dlp is being updated. Try again in a moment.' };
+  if (batch || jobs.size > 0) {
+    return { ok: false, error: 'busy', message: 'Finish or cancel active downloads before installing yt-dlp.' };
+  }
   if (process.platform !== 'win32') {
     return { ok: false, error: 'manual', message: 'Install yt-dlp and make sure it is on your PATH.' };
   }
@@ -449,70 +982,104 @@ async function installTool() {
     const target = bundledToolPath();
     const temp = `${target}.download`;
 
+    // One deadline covers headers, the streamed body, checksum fetch, and
+    // hashing. A stalled body must not leave `installing` stuck forever.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 120000);
-    let response;
+    let rejectDeadline = null;
+    const deadline = new Promise((_, reject) => {
+      rejectDeadline = reject;
+    });
+    const timer = setTimeout(() => {
+      controller.abort();
+      const error = new Error('yt-dlp download timed out.');
+      error.name = 'TimeoutError';
+      if (rejectDeadline) rejectDeadline(error);
+    }, TOOL_INSTALL_TIMEOUT_MS);
+
     try {
-      response = await net.fetch(YTDLP_WIN_URL, {
-        redirect: 'follow',
-        signal: controller.signal
+      const response = await Promise.race([
+        net.fetch(YTDLP_WIN_URL, {
+          redirect: 'follow',
+          signal: controller.signal
+        }),
+        deadline
+      ]);
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Download failed (HTTP ${response.status}).`);
+      }
+
+      const total = Number(response.headers.get('content-length')) || 0;
+      let received = 0;
+      let lastEmit = 0;
+      const reader = response.body.getReader();
+      const file = fs.createWriteStream(temp);
+      const hasher = crypto.createHash('sha256');
+      let writeError = null;
+      file.on('error', (error) => {
+        writeError = error;
       });
-    } finally {
-      clearTimeout(timer);
-    }
 
-    if (!response.ok || !response.body) {
-      throw new Error(`Download failed (HTTP ${response.status}).`);
-    }
-
-    const total = Number(response.headers.get('content-length')) || 0;
-    let received = 0;
-    let lastEmit = 0;
-    const reader = response.body.getReader();
-    const file = fs.createWriteStream(temp);
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        received += value.byteLength;
-        if (!file.write(Buffer.from(value))) {
-          await new Promise((resolve) => file.once('drain', resolve));
+      try {
+        while (true) {
+          // Race a stalled read against the overall deadline so a dead
+          // connection cannot keep `installing` true forever.
+          const { done, value } = await Promise.race([reader.read(), deadline]);
+          if (done) break;
+          const chunk = Buffer.from(value);
+          // Hash while writing so verification does not need a second full
+          // read of the downloaded executable.
+          hasher.update(chunk);
+          received += chunk.length;
+          if (!file.write(chunk)) {
+            await new Promise((resolve, reject) => {
+              if (writeError) {
+                reject(writeError);
+                return;
+              }
+              const onDrain = () => {
+                cleanup();
+                resolve();
+              };
+              const onError = (error) => {
+                cleanup();
+                reject(error);
+              };
+              const cleanup = () => {
+                file.off('drain', onDrain);
+                file.off('error', onError);
+              };
+              file.once('drain', onDrain);
+              file.once('error', onError);
+            });
+          }
+          if (Date.now() - lastEmit > 250) {
+            lastEmit = Date.now();
+            emit({
+              type: 'tool-progress',
+              percent: total ? Math.min(99, (received / total) * 100) : 0,
+              received,
+              total
+            });
+          }
         }
-        if (Date.now() - lastEmit > 250) {
-          lastEmit = Date.now();
-          emit({
-            type: 'tool-progress',
-            percent: total ? Math.min(99, (received / total) * 100) : 0,
-            received,
-            total
-          });
-        }
+      } finally {
+        file.end();
+        await Promise.race([finished(file), deadline]);
+      }
+
+      // Verify the downloaded binary against yt-dlp's published SHA-256 list
+      // before it is ever executed.
+      const digest = hasher.digest('hex');
+      const expected = await Promise.race([
+        fetchYtdlpChecksum(controller.signal),
+        deadline
+      ]);
+      if (digest !== expected) {
+        throw new Error('yt-dlp checksum verification failed. The download may be corrupted.');
       }
     } finally {
-      file.end();
-      await finished(file);
-    }
-
-    // Verify the downloaded binary against yt-dlp's published SHA-256 list
-    // before it is ever executed.
-    const sumsResponse = await net.fetch(YTDLP_SUMS_URL, { redirect: 'follow' });
-    if (!sumsResponse.ok) {
-      throw new Error(`Could not verify yt-dlp (checksum list HTTP ${sumsResponse.status}).`);
-    }
-    const sums = await sumsResponse.text();
-    const checksumLine = sums.split(/\r?\n/).find((line) => /\byt-dlp\.exe\s*$/i.test(line.trim()));
-    const expected = checksumLine ? checksumLine.trim().split(/\s+/)[0].toLowerCase() : '';
-    if (!/^[a-f0-9]{64}$/.test(expected)) {
-      throw new Error('Could not find the yt-dlp.exe checksum.');
-    }
-
-    const digest = crypto
-      .createHash('sha256')
-      .update(await fs.promises.readFile(temp))
-      .digest('hex');
-    if (digest !== expected) {
-      throw new Error('yt-dlp checksum verification failed. The download may be corrupted.');
+      clearTimeout(timer);
     }
 
     fs.renameSync(temp, target);
@@ -530,10 +1097,164 @@ async function installTool() {
     try {
       fs.unlinkSync(`${bundledToolPath()}.download`);
     } catch (cleanupError) {}
-    emit({ type: 'tool-error', message: error.message });
-    return { ok: false, error: 'download-failed', message: error.message };
+    const aborted = Boolean(error) && (
+      error.name === 'AbortError'
+      || error.name === 'TimeoutError'
+      || /aborted|timed out|timeout/i.test(String(error.message || ''))
+    );
+    const message = aborted
+      ? 'yt-dlp download timed out. Check your connection and try again.'
+      : (error && error.message) || 'Could not download yt-dlp.';
+    emit({ type: 'tool-error', message });
+    return { ok: false, error: 'download-failed', message };
   } finally {
     installing = false;
+  }
+}
+
+function summarizeUpdateFailure(error, stderr) {
+  if (error && error.killed) {
+    return 'yt-dlp did not finish updating within 120 seconds.';
+  }
+  const lines = String(stderr || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const errorLine = lines.slice().reverse().find((line) => /^ERROR:/i.test(line));
+  return errorLine
+    || lines.slice(-1)[0]
+    || (error && error.message)
+    || 'Could not update yt-dlp.';
+}
+
+async function updateTool() {
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (batch || jobs.size > 0) {
+    return { ok: false, error: 'busy', message: 'Finish or cancel active downloads before updating yt-dlp.' };
+  }
+  if (updating) {
+    return { ok: false, error: 'busy', message: 'yt-dlp is already being updated.' };
+  }
+  if (installing) {
+    return { ok: false, error: 'busy', message: 'yt-dlp is still being installed.' };
+  }
+  if (process.platform !== 'win32') {
+    return {
+      ok: false,
+      error: 'unsupported',
+      message: 'Self-update is only available for the app-managed yt-dlp.exe on Windows. Update yt-dlp with your package manager.'
+    };
+  }
+
+  // Lock out installTool (and any future caller) while probing/updating, so a
+  // concurrent install cannot replace the executable under -U.
+  updating = true;
+  let tool = null;
+  try {
+    tool = await probeTool();
+  } catch (error) {
+    updating = false;
+    throw error;
+  }
+  if (!tool) {
+    updating = false;
+    const info = recordError('yt-dlp was not found.');
+    return { ok: false, error: 'tool-missing', message: info.message, version: null };
+  }
+  if (!samePath(tool.path, bundledToolPath())) {
+    updating = false;
+    return {
+      ok: false,
+      error: 'managed',
+      message: 'This yt-dlp is managed outside the app. Update it with its package manager or the tool that installed it.',
+      version: tool.version
+    };
+  }
+
+  try {
+    let stdout = '';
+    let stderr = '';
+    try {
+      const result = await execFileAsync(tool.path, ['--ignore-config', '-U'], {
+        windowsHide: true,
+        timeout: 120000,
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024
+      });
+      stdout = String(result.stdout || '');
+      stderr = String(result.stderr || '');
+    } catch (error) {
+      stderr = String((error && error.stderr) || '') || error.message;
+      probeCache = { at: 0, tool: null };
+      let fresh = null;
+      try {
+        fresh = await probeTool(true);
+      } catch (probeError) {}
+      const message = summarizeUpdateFailure(error, stderr);
+      recordError(message, { title: 'yt-dlp update' });
+      emit({
+        type: 'tool-update-error',
+        message,
+        version: fresh ? fresh.version : null
+      });
+      return { ok: false, error: 'update-failed', message, version: fresh ? fresh.version : null };
+    }
+
+    probeCache = { at: 0, tool: null };
+    const fresh = await probeTool(true);
+    const version = fresh && fresh.version ? fresh.version : null;
+
+    const failVerification = (reason) => {
+      // Never leave an unverified executable in the active tool path. Move it
+      // aside so later downloads fail closed until a verified copy is installed.
+      try {
+        const target = bundledToolPath();
+        if (fs.existsSync(target)) {
+          const quarantine = `${target}.unverified-${Date.now()}`;
+          fs.renameSync(target, quarantine);
+          appendLog(`quarantined unverified yt-dlp as ${quarantine}`);
+        }
+      } catch (error) {
+        appendLog(`could not quarantine unverified yt-dlp: ${error.message}`);
+      }
+      probeCache = { at: 0, tool: null };
+      const message = `${reason} Reinstall yt-dlp from the Offline panel if downloads keep failing.`;
+      recordError(message, { title: 'yt-dlp update' });
+      emit({ type: 'tool-update-error', message, version });
+      return { ok: false, error: 'verify-failed', message, version };
+    };
+
+    if (!fresh) {
+      return failVerification('yt-dlp did not start after updating.');
+    }
+    if (!version) {
+      return failVerification('yt-dlp did not report a version after updating.');
+    }
+    if (!samePath(fresh.path, bundledToolPath())) {
+      return failVerification('yt-dlp no longer resolves to the app-managed tool after updating.');
+    }
+
+    // Do not trust a self-updated executable just because it starts. Verify
+    // the bytes against yt-dlp's published SHA-256 list. A failed check keeps
+    // the binary in place; the user can reinstall from the Offline panel.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TOOL_VERIFY_TIMEOUT_MS);
+    try {
+      await verifyYtdlpBinary(fresh.path, controller.signal);
+    } catch (error) {
+      const reason = (error && error.message) || 'yt-dlp checksum verification failed.';
+      return failVerification(reason);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const alreadyCurrent = /up to date|already (?:the )?(?:latest|current)/i.test(`${stdout}\n${stderr}`);
+    const message = alreadyCurrent
+      ? `yt-dlp is up to date (v${version}, checksum verified).`
+      : `yt-dlp updated to v${version} (checksum verified).`;
+
+    appendLog(message);
+    emit({ type: 'tool-updated', version, message });
+    return { ok: true, version, message };
+  } finally {
+    updating = false;
   }
 }
 
@@ -556,6 +1277,9 @@ function emitBatchProgress(current) {
 function completeBatch(current) {
   if (!current || batch !== current) return;
   batch = null;
+  // A clean batch resolves older download errors; a batch with failures keeps
+  // the most recent one visible in the Offline panel.
+  if (!current.failed) lastError = null;
   appendLog(`playlist finished "${current.title}" (${current.saved} saved, ${current.failed} failed, ${current.skipped} skipped)`);
   emit({
     type: 'batch-complete',
@@ -599,11 +1323,11 @@ function finishBatchItem(job, saved) {
 
 async function pumpBatch() {
   const current = batch;
-  if (!current || current.pumping) return;
+  if (!current || current.pumping || current.cancelRequested) return;
   current.pumping = true;
 
   try {
-    while (batch === current && current.cursor < current.items.length) {
+    while (batch === current && !current.cancelRequested && current.cursor < current.items.length) {
       const meta = current.items[current.cursor];
       current.cursor += 1;
 
@@ -617,8 +1341,23 @@ async function pumpBatch() {
       current.currentId = meta.videoId;
       emitBatchProgress(current);
 
-      const result = await start(meta, { format: current.format, batchId: current.id });
-      if (batch !== current) return;
+      // A cancel can arrive while start() is probing the tools. The batch
+      // token lets start() refuse to spawn, and the checks below stop this
+      // loop even if start() returns after the batch was failed.
+      if (batch !== current || current.cancelRequested || shuttingDown) return;
+
+      const result = await start(meta, {
+        format: current.format,
+        quality: current.quality,
+        videoQuality: current.videoQuality,
+        embedMetadata: current.embedMetadata,
+        embedThumbnail: current.embedThumbnail,
+        sponsorblock: current.sponsorblock,
+        batchId: current.id,
+        playlistTitle: current.title,
+        __batch: current
+      });
+      if (batch !== current || current.cancelRequested || shuttingDown) return;
 
       if (!result || !result.ok) {
         if (result && (result.error === 'duplicate' || result.error === 'already-running')) {
@@ -643,7 +1382,7 @@ async function pumpBatch() {
       return;
     }
 
-    if (batch === current) completeBatch(current);
+    if (batch === current && !current.cancelRequested && !shuttingDown) completeBatch(current);
   } finally {
     if (batch === current) current.pumping = false;
   }
@@ -651,13 +1390,25 @@ async function pumpBatch() {
 
 async function startMany(payload) {
   const options = payload && typeof payload === 'object' ? payload : {};
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
   if (batch) return { ok: false, error: 'batch-running' };
 
   const list = Array.isArray(options.items) ? options.items : [];
   if (!list.length) return { ok: false, error: 'empty' };
 
+  const resolved = resolveDownloadOptions(options);
   const format = normalizeFormat(options.format);
+  const quality = resolved.quality;
+  const videoQuality = resolved.videoQuality;
   const [tool, ffmpeg] = await Promise.all([probeTool(), probeFfmpeg()]);
+
+  // Another startMany()/start() may have created a batch while these probes
+  // were resolving. Never overwrite it and orphan the running pump.
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (batch) return { ok: false, error: 'batch-running' };
+
   if (!tool) {
     recordError('yt-dlp was not found.', { title: options.title });
     return { ok: false, error: 'tool-missing' };
@@ -699,13 +1450,19 @@ async function startMany(payload) {
     return { ok: true, id: null, total: 0, skipped, empty: true };
   }
 
-  const title = String(options.title || 'Current playlist').replace(/\s+/g, ' ').trim().slice(0, 150)
-    || 'Current playlist';
+  const title = String(options.title || options.playlistTitle || 'Current playlist')
+    .replace(/\s+/g, ' ').trim().slice(0, 150) || 'Current playlist';
   const id = `playlist-${Date.now().toString(36)}-${batchCounter += 1}`;
   const current = {
     id,
     title,
     format,
+    quality,
+    videoQuality,
+    embedMetadata: resolved.embedMetadata,
+    embedThumbnail: resolved.embedThumbnail,
+    sponsorblock: resolved.sponsorblock,
+    cancelRequested: false,
     items,
     cursor: 0,
     total: items.length,
@@ -725,6 +1482,8 @@ async function startMany(payload) {
     id,
     title,
     format,
+    quality,
+    videoQuality,
     total: items.length,
     skipped
   });
@@ -736,7 +1495,9 @@ async function startMany(payload) {
     total: items.length,
     skipped,
     title,
-    format
+    format,
+    quality,
+    videoQuality
   };
 }
 
@@ -746,56 +1507,64 @@ function finishJob(job, code, signal, stderr) {
   jobs.delete(job.id);
 
   if (job.cancelled) {
-    removeFilesForJob(job);
+    cleanupJobFiles(job, 'cancel');
     emit({ type: 'cancelled', id: job.id, videoId: job.meta.videoId, batchId: job.batchId || '' });
     finishBatchItem(job, false);
     return;
   }
 
-  if (code !== 0) {
-    removeFilesForJob(job);
-    const message = String(stderr || '').trim().split(/\r?\n/).filter(Boolean).slice(-1)[0]
-      || `yt-dlp exited with code ${code}${signal ? ` (${signal})` : ''}.`;
-    job.lastError = message;
-    recordError(message, job.meta);
+  const combinedOutput = `${job.tail || ''}\n${stderr || ''}`;
+  let file = validJobFile(job);
+  // M4A with only a failed thumbnail/metadata step has no [Merger] or
+  // [ExtractAudio] line, so look for the completed media before deciding the
+  // job failed. This keeps a good download when optional tagging fails.
+  if (!file) file = findCompletedFile(job);
+  let warning = '';
 
-    if (job.batchId && batch && batch.id === job.batchId
-      && /ffmpeg not found|ffprobe and ffmpeg/i.test(message)) {
-      failBatch(batch, 'FFmpeg could not be used. Install FFmpeg or set YTMD_FFMPEG_PATH, then retry.');
+  if (code !== 0) {
+    if (file && isTaggingFailure(combinedOutput)) {
+      // The media finished and was post-processed; only an optional metadata or
+      // thumbnail step failed. Keep the download instead of discarding it.
+      warning = 'Saved without complete metadata or cover art.';
+      appendLog(`[${job.meta.title}] ${warning}`);
+    } else {
+      const message = lastMeaningfulError(stderr, code, signal);
+      job.lastError = message;
+      recordError(message, job.meta);
+
+      // Cancelled and permanent failures remove their partial output. A
+      // transient (network/HTTP/timeout) failure intentionally keeps .part
+      // and completed stream files so yt-dlp --continue can resume on retry.
+      if (isRetryableFailure(combinedOutput)) {
+        cleanupJobFiles(job, 'fail-keep-partial');
+        appendLog(`[${job.meta.title}] kept partial files so a retry can resume`);
+      } else {
+        cleanupJobFiles(job, 'fail');
+      }
+
+      if (job.batchId && batch && batch.id === job.batchId
+        && /ffmpeg not found|ffprobe and ffmpeg|ffmpeg-location/i.test(message)) {
+        failBatch(batch, 'FFmpeg could not be used. Install FFmpeg or set YTMD_FFMPEG_PATH, then retry.');
+        return;
+      }
+
+      emit({
+        type: 'error',
+        id: job.id,
+        videoId: job.meta.videoId,
+        batchId: job.batchId || '',
+        message,
+        retryable: isRetryableFailure(combinedOutput)
+      });
+      finishBatchItem(job, false);
       return;
     }
-
-    emit({ type: 'error', id: job.id, videoId: job.meta.videoId, batchId: job.batchId || '', message });
-    finishBatchItem(job, false);
-    return;
   }
 
-  const dir = path.resolve(downloadDir());
-  let file = '';
-
-  if (job.filePath) {
-    const resolved = path.resolve(job.filePath);
-    const relative = path.relative(dir, resolved);
-    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative) && fs.existsSync(resolved)) {
-      file = resolved;
-    }
-  }
-
-  if (!file && job.baseName) file = findFileForBase(job.baseName);
+  if (file) file = isUsableFile(file, job.dir);
 
   if (!file) {
-    let match = '';
-    try {
-      match = fs.readdirSync(dir).find((name) => (
-        name.startsWith(`${job.meta.videoId}.`)
-        && !/\.(part|ytdl|temp)$/i.test(name)
-      )) || '';
-    } catch (error) {}
-    if (match) file = path.join(dir, match);
-  }
-
-  if (!file) {
-    removeFilesForJob(job);
+    cleanupJobFiles(job, 'fail');
     const message = 'The downloaded file could not be found.';
     recordError(message, job.meta);
     emit({
@@ -803,7 +1572,8 @@ function finishJob(job, code, signal, stderr) {
       id: job.id,
       videoId: job.meta.videoId,
       batchId: job.batchId || '',
-      message
+      message,
+      retryable: false
     });
     finishBatchItem(job, false);
     return;
@@ -826,23 +1596,71 @@ function finishJob(job, code, signal, stderr) {
     file,
     ext: path.extname(file).replace('.', '').toLowerCase(),
     format: job.format,
+    quality: job.quality,
+    videoQuality: job.videoQuality,
     size,
+    playlistTitle: job.playlistTitle || '',
     addedAt: Date.now()
   };
+  if (warning) item.warning = warning;
 
   index = index.filter((entry) => entry.id !== item.id);
   index.push(item);
   writeIndex();
-  emit({ type: 'complete', item, batchId: job.batchId || '' });
+  // A successful single save resolves older failures so the Offline panel
+  // does not keep showing a months-old error. For a batch, completeBatch()
+  // decides: keep the error if any item failed.
+  if (!job.batchId) lastError = null;
+  emit({ type: 'complete', item, batchId: job.batchId || '', warning });
   finishBatchItem(job, true);
+}
+
+function phaseForFormat(format) {
+  if (format === 'mp3') return 'Converting to MP3…';
+  if (format === 'm4a') return 'Finishing M4A…';
+  return 'Finishing MP4…';
+}
+
+function captureDestination(job, line) {
+  const merger = line.match(/^\[Merger\] Merging formats into "(.+)"\s*$/);
+  if (merger) {
+    job.finalDestination = merger[1];
+    return true;
+  }
+  const extracted = line.match(/^\[ExtractAudio\] Destination: "?(.+?)"?\s*$/);
+  if (extracted) {
+    job.finalDestination = extracted[1];
+    return true;
+  }
+  const already = line.match(/^\[download\] (.+) has already been downloaded\s*$/);
+  if (already) {
+    job.existingDestination = already[1];
+    return true;
+  }
+  return false;
 }
 
 async function start(meta, options = {}) {
   const clean = sanitizeMeta(meta);
   if (!clean) return { ok: false, error: 'invalid' };
+  if (shuttingDown) return { ok: false, error: 'shutting-down', message: 'The app is shutting down.' };
+  if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
 
-  const format = normalizeFormat(options.format);
+  const opts = options && typeof options === 'object' ? options : {};
+  const batchOwner = opts.__batch && typeof opts.__batch === 'object' ? opts.__batch : null;
+  const resolved = resolveDownloadOptions(opts);
+  const format = normalizeFormat(opts.format);
+  const quality = resolved.quality;
+  const videoQuality = resolved.videoQuality;
   const [tool, ffmpeg] = await Promise.all([probeTool(), probeFfmpeg()]);
+
+  // Cancellation/shutdown can happen during the probe await. Check the batch
+  // token before doing any work that could spawn yt-dlp.
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (batchOwner && (batchOwner.cancelRequested || batch !== batchOwner)) {
+    return { ok: false, error: 'cancelled' };
+  }
+
   if (!tool) {
     recordError('yt-dlp was not found.', clean);
     return { ok: false, error: 'tool-missing' };
@@ -858,46 +1676,56 @@ async function start(meta, options = {}) {
   if (jobs.has(clean.videoId)) return { ok: false, error: 'already-running' };
   if (findItem(clean.videoId)) return { ok: false, error: 'duplicate' };
 
-  const dir = downloadDir();
-  fs.mkdirSync(dir, { recursive: true });
-  const baseName = uniqueBaseName(clean);
-  const output = outputTemplate(baseName);
+  const dir = getDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (error) {}
 
-  const args = [
-    '--no-playlist',
-    '--no-part',
-    '--newline',
-    '--no-warnings',
-    '--progress',
-    '--no-simulate',
-    '--print',
-    'after_move:YTMD_FILE:%(filepath)s'
-  ];
+  const audio = AUDIO_FORMATS.includes(format);
+  const embedMetadata = Boolean(ffmpeg) && resolved.embedMetadata;
+  const embedThumbnail = Boolean(ffmpeg) && audio && resolved.embedThumbnail;
+  const sponsorblock = Boolean(ffmpeg) && resolved.sponsorblock;
 
-  if (format === 'mp3') {
-    args.push(
-      '-f', 'bestaudio/best',
-      '--extract-audio',
-      '--audio-format', 'mp3',
-      '--audio-quality', '0'
-    );
-    if (ffmpeg) args.push('--ffmpeg-location', ffmpeg.path);
-  } else if (ffmpeg) {
-    args.push(
-      '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-      '--merge-output-format', 'mp4',
-      '--ffmpeg-location', ffmpeg.path
-    );
-  } else {
-    // A progressive MP4 is the best we can guarantee without FFmpeg.
-    args.push('-f', 'best[ext=mp4]');
+  let sponsorBlockCategories = [];
+  if (sponsorblock) {
+    try {
+      sponsorBlockCategories = sanitizeSponsorBlockCategories(config.get().sponsorBlock.categories);
+    } catch (error) {
+      sponsorBlockCategories = [];
+    }
   }
 
-  args.push('-o', output, clean.url);
+  const args = buildDownloadArgs({
+    format,
+    quality,
+    videoQuality,
+    hasFfmpeg: Boolean(ffmpeg),
+    embedMetadata,
+    embedThumbnail,
+    sponsorblock,
+    sponsorBlockCategories
+  });
+
+  if (ffmpeg) args.push('--ffmpeg-location', ffmpeg.path);
+
+  const baseName = uniqueBaseName(clean, dir);
+  args.push('-o', outputTemplate(baseName, dir), clean.url);
+
+  // Final guard immediately before spawning: a batch cancel or app shutdown
+  // during any earlier step must never start another yt-dlp process.
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (batchOwner && (batchOwner.cancelRequested || batch !== batchOwner)) {
+    return { ok: false, error: 'cancelled' };
+  }
 
   let child;
   try {
-    child = spawn(tool.path, args, { windowsHide: true });
+    child = spawn(tool.path, args, {
+      windowsHide: true,
+      cwd: dir,
+      detached: process.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
   } catch (error) {
     return { ok: false, error: 'spawn-failed', message: error.message };
   }
@@ -909,9 +1737,21 @@ async function start(meta, options = {}) {
     cancelled: false,
     finished: false,
     baseName,
+    dir,
     format,
-    batchId: String(options.batchId || ''),
+    quality,
+    videoQuality,
+    embedMetadata,
+    embedThumbnail,
+    sponsorblock,
+    batchId: String(opts.batchId || ''),
+    playlistTitle: String(opts.playlistTitle || opts.playlist || '').replace(/\s+/g, ' ').trim().slice(0, 150),
     filePath: '',
+    finalDestination: '',
+    existingDestination: '',
+    tail: '',
+    percent: 0,
+    phase: '',
     lastError: ''
   };
   jobs.set(job.id, job);
@@ -921,6 +1761,8 @@ async function start(meta, options = {}) {
     videoId: clean.videoId,
     title: clean.title,
     format,
+    quality,
+    videoQuality,
     batchId: job.batchId
   });
 
@@ -933,100 +1775,188 @@ async function start(meta, options = {}) {
       job.filePath = fileMatch[1].trim().replace(/^"(.*)"$/, '$1');
       return;
     }
+    captureDestination(job, line);
+
     const match = line.match(/\[download\]\s+(\d+(?:\.\d+)?)%/);
     if (match) {
+      job.percent = Math.max(0, Math.min(100, Number(match[1]) || 0));
+      job.phase = '';
       emit({
         type: 'progress',
         id: job.id,
         videoId: job.meta.videoId,
         batchId: job.batchId,
-        percent: Number(match[1])
+        percent: job.percent
       });
     }
-    if (/\[ExtractAudio\]|\[Merger\]|\[Metadata\]|\[ThumbnailsConvertor\]/.test(line)) {
+    if (/\[ExtractAudio\]|\[Merger\]|\[Metadata\]|\[ThumbnailsConvertor\]|\[EmbedThumbnail\]|\[SponsorBlock\]|\[VideoRemuxer\]|\[VideoConvertor\]|\[FixupM3u8\]/.test(line)) {
+      job.percent = 100;
+      job.phase = phaseForFormat(format);
       emit({
         type: 'progress',
         id: job.id,
         videoId: job.meta.videoId,
         batchId: job.batchId,
         percent: 100,
-        phase: format === 'mp3' ? 'Converting to MP3…' : 'Finishing MP4…'
+        phase: job.phase
       });
     }
   };
 
   child.stdout.on('data', (chunk) => {
-    pending += chunk.toString();
+    const text = chunk.toString();
+    pending += text;
+    job.tail = `${job.tail}${text}`.slice(-12000);
     const lines = pending.split(/\r?\n/);
     pending = lines.pop() || '';
     for (const line of lines) handleLine(line);
   });
   child.stderr.on('data', (chunk) => {
-    stderr = `${stderr}${chunk.toString()}`.slice(-4000);
+    const text = chunk.toString();
+    stderr = `${stderr}${text}`.slice(-6000);
+    job.tail = `${job.tail}${text}`.slice(-12000);
   });
 
   child.on('error', (error) => {
     if (job.finished) return;
     job.finished = true;
     jobs.delete(job.id);
-    removeFilesForJob(job);
-    job.lastError = error.message;
+    if (!job.cancelled) {
+      cleanupJobFiles(job, 'fail');
+      job.lastError = error.message;
+      recordError(error.message, job.meta);
+    }
     emit({
       type: 'error',
       id: job.id,
       videoId: job.meta.videoId,
       batchId: job.batchId,
-      message: error.message
+      message: error.message,
+      retryable: false
     });
     finishBatchItem(job, false);
   });
   child.on('close', (code, signal) => finishJob(job, code, signal, stderr));
 
-  return { ok: true, id: job.id, baseName, format };
+  return { ok: true, id: job.id, baseName, format, dir };
+}
+
+function killProcessTree(child) {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    // yt-dlp spawns FFmpeg as a child; taskkill /T prevents orphaned encoders.
+    const taskkill = process.env.SystemRoot
+      ? path.join(process.env.SystemRoot, 'System32', 'taskkill.exe')
+      : 'taskkill';
+    try {
+      execFile(taskkill, ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {});
+    } catch (error) {}
+  } else {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch (error) {
+      try {
+        child.kill('SIGKILL');
+      } catch (killError) {}
+    }
+  }
+
+  const timer = setTimeout(() => {
+    try {
+      child.kill('SIGKILL');
+    } catch (error) {}
+  }, 5000);
+  if (timer.unref) timer.unref();
 }
 
 function cancel(id) {
   const key = String(id || '');
 
   if (batch && batch.id === key) {
-    const job = jobs.get(batch.currentId || '');
+    const current = batch;
+    // Mark the token first: pumpBatch may be inside start()'s probe await and
+    // must be able to see the cancellation before it spawns yt-dlp.
+    current.cancelRequested = true;
+    const job = jobs.get(current.currentId || '');
     if (job) {
       job.cancelled = true;
-      try {
-        job.child.kill();
-      } catch (error) {}
+      killProcessTree(job.child);
     }
-    failBatch(batch, 'Playlist download cancelled.');
+    failBatch(current, 'Playlist download cancelled.');
     return true;
   }
 
   const job = jobs.get(key);
   if (!job) return false;
   job.cancelled = true;
-  try {
-    job.child.kill();
-  } catch (error) {}
+  killProcessTree(job.child);
   return true;
 }
 
 function remove(id) {
   const key = String(id || '');
   cancel(key);
-  const item = findItem(key);
+  const item = index.find((entry) => entry.id === key) || null;
   if (!item) return false;
-  const dir = downloadDir();
-  try {
-    fs.unlinkSync(path.join(dir, path.basename(item.file)));
-  } catch (error) {}
-  index = index.filter((entry) => entry.id !== key);
-  writeIndex();
+
+  const file = safeItemFile(item);
+  if (file) {
+    try {
+      fs.unlinkSync(file);
+    } catch (error) {
+      // Keep the entry if Windows still has the file locked; reporting success
+      // here would make the file disappear from the library while staying on
+      // disk.
+      return false;
+    }
+  } else if (!isDefinitelyMissing(item.file)) {
+    // A temporarily unavailable network folder is not permission to forget
+    // the item (and later let a new download overwrite it).
+    return false;
+  }
+
+  // Explicit removal is already acknowledged by the caller; only stale
+  // entries discovered elsewhere emit the 'removed' refresh event.
+  dropIndexItem(key, { notify: false });
   return true;
 }
 
+async function retry(meta, options = {}) {
+  const clean = sanitizeMeta(meta);
+  if (!clean) return { ok: false, error: 'invalid' };
+  if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (jobs.has(clean.videoId)) return { ok: false, error: 'already-running' };
+
+  // findItem() drops a stale entry whose file no longer exists, so a retry can
+  // legitimately re-download it.
+  if (findItem(clean.videoId)) return { ok: false, error: 'duplicate' };
+
+  cleanupForRetry(clean, getDir());
+  appendLog(`[${clean.title}] retrying download`);
+  return start(clean, options);
+}
+
 async function openFolder() {
-  const dir = downloadDir();
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = getDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (error) {}
   await shell.openPath(dir);
+}
+
+async function openLog() {
+  const file = logPath();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.closeSync(fs.openSync(file, 'a'));
+  } catch (error) {}
+  try {
+    const error = await shell.openPath(file);
+    return !error;
+  } catch (error) {
+    return false;
+  }
 }
 
 function reveal(id) {
@@ -1037,14 +1967,17 @@ function reveal(id) {
 }
 
 function shutdown() {
-  batch = null;
+  shuttingDown = true;
+  if (batch) {
+    batch.cancelRequested = true;
+    batch = null;
+  }
   for (const job of jobs.values()) {
     job.cancelled = true;
-    try {
-      job.child.kill();
-    } catch (error) {}
+    killProcessTree(job.child);
   }
   jobs = new Map();
+  updating = false;
 }
 
 module.exports = {
@@ -1053,11 +1986,18 @@ module.exports = {
   list,
   start,
   startMany,
+  retry,
   cancel,
   remove,
   resolveMedia,
   installTool,
+  updateTool,
   openFolder,
+  openLog,
   reveal,
-  shutdown
+  getDir,
+  setDir,
+  getLastError,
+  shutdown,
+  _internal: require('./download-utils')._internal
 };
