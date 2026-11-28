@@ -10,12 +10,9 @@ winget validate --manifest packaging\winget\altwasntavailable.YTMusicDesktop\1.2
 ```
 
 To publish it to the Winget community repository, submit the same manifest to
-[`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs). A pull
-request can be created with WingetCreate:
-
-```powershell
-wingetcreate submit --manifest packaging\winget\altwasntavailable.YTMusicDesktop\1.2.1
-```
+[`microsoft/winget-pkgs`](https://github.com/microsoft/winget-pkgs). You can use
+[WingetCreate](https://github.com/microsoft/winget-create) or open the manifest
+pull request manually.
 
 Once accepted, users will be able to install with:
 

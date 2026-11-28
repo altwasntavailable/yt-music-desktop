@@ -13,7 +13,7 @@ The app stores the following data in its Electron user-data folder
 - App settings, window position, and equalizer preferences.
 - Downloaded tracks (only when you choose to download them).
 - The optional `yt-dlp` helper and its download index.
-- Troubleshooting logs, including the watchdog restart log.
+- Troubleshooting logs, including the watchdog restart log and download error log.
 - Browser sign-in profile data when you use browser sign-in.
 
 You can remove the YouTube session with **Settings → Account → Sign out**, or
