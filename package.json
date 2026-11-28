@@ -1,6 +1,6 @@
 {
   "name": "yt-music-desktop",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Unofficial YouTube Music desktop app for Windows with ad blocking, offline M4A/MP3/MP4 downloads, an offline library, lyrics, equalizer, SponsorBlock, and tray playback.",
   "main": "src/main/main.js",
   "author": "ALT (altwasntavailable)",

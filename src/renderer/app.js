@@ -1466,7 +1466,7 @@ function bindWebviewEvents() {
       hideError();
       webview.classList.add('ready');
       desktop.browserSignIn().catch(() => {});
-      toast('Google sign-in needs a real browser. Opening it now…', 7000);
+      toast('Choose how to use your Google session…', 7000);
       return;
     }
 
@@ -2881,7 +2881,7 @@ function bindAuthStatus() {
 
     switch (payload.status) {
       case 'started':
-        toast(message || 'Opening your browser for Google sign-in…', 6000);
+        toast(message || 'Preparing Google sign-in…', 6000);
         break;
       case 'success':
         toast(message || 'Signed in!', 8000);

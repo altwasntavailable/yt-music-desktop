@@ -3,14 +3,14 @@
 The manifest in this folder packages the NSIS installer for
 `altwasntavailable.YTMusicDesktop`.
 
-The checked-in manifest currently targets **1.3.0**, the latest published
+The checked-in manifest currently targets **1.3.1**, the latest published
 release. Its installer URL and SHA-256 match the released
-`YT-Music-Desktop-Setup-1.3.0.exe`.
+`YT-Music-Desktop-Setup-1.3.1.exe`.
 
 Validate it locally:
 
 ```powershell
-winget validate --manifest packaging\winget\altwasntavailable.YTMusicDesktop\1.3.0
+winget validate --manifest packaging\winget\altwasntavailable.YTMusicDesktop\1.3.1
 ```
 
 To publish it to the Winget community repository, submit the same manifest to

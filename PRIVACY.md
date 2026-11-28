@@ -19,9 +19,16 @@ folder:
 - The download index and the optional `yt-dlp` helper.
 - Troubleshooting logs, including the watchdog restart log and download error
   log. The download log lives in the active download folder.
-- Temporary browser sign-in profile data while you use browser sign-in. The
-  dedicated profile is removed after a successful import, on sign-out, and on
-  cancellation/timeout cleanup where Windows file locks allow it.
+- Temporary browser sign-in data while you use browser sign-in. For the separate
+  browser flow, the dedicated profile is removed after a successful import, on
+  sign-out, and on cancellation/timeout cleanup where Windows file locks allow
+  it.
+- If you choose to import an existing Chrome/Edge/Brave/Vivaldi session, a
+  temporary copy of the selected profile's cookie database and cookie
+  encryption key is created under the system temp folder. The app reads it
+  locally, imports only Google/YouTube cookies, and deletes the copy on success,
+  failure, cancellation, or the next startup if cleanup was interrupted. The
+  real browser profile is never modified.
 
 Downloaded files and the download log live in the active download folder (the
 app's `downloads` folder by default). The download index and settings stay in
@@ -35,7 +42,10 @@ the active download folder.
 
 The app connects to third-party services only to provide its features:
 
-- **YouTube Music / Google** for playback and sign-in.
+- **YouTube Music / Google** for playback and sign-in. If you choose to import
+  a session from a local browser, the app reads that browser's cookie database
+  on your computer; it does not send the browser profile or cookie database to
+  the developer.
 - **LRCLIB** when the lyrics panel requests lyrics.
 - **SponsorBlock** when SponsorBlock is enabled, to fetch segment metadata. The
   same lookup is used when you enable SponsorBlock cutting for downloads.

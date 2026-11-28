@@ -31,8 +31,11 @@ const { TrayController } = require('./tray');
 const { createDesktopIntegration } = require('./desktop-integration');
 const {
   startBrowserAuth,
+  importBrowserSession,
+  getBrowserImportInfo,
   stopBrowserAuth,
-  clearBrowserSignInProfile
+  clearBrowserSignInProfile,
+  cleanupStaleAuthProfiles
 } = require('./browser-auth');
 
 const APP_ID = 'com.ytmusicdesktop.app';
@@ -125,6 +128,8 @@ let boundsTimer = null;
 let debugScheduled = false;
 let debugCaptured = false;
 let browserAuthStarting = false;
+let authQuitCleanupStarted = false;
+let authQuitCleanupDone = false;
 let lastHeartbeatAt = 0;
 let healthCheckTimer = null;
 let healthCheckInterval = null;
@@ -682,26 +687,109 @@ function isSignInUrl(url) {
   }
 }
 
+function authStatusCallbacks() {
+  return {
+    onStatus: (payload) => {
+      if (IS_DEV) console.log('[auth]', payload.status, payload.message || '');
+      sendToRenderer('auth:status', payload);
+    },
+    onImported: () => {
+      if (guestContents && !guestContents.isDestroyed()) {
+        guestContents.loadURL('https://music.youtube.com/');
+      }
+      showWindow();
+    }
+  };
+}
+
+function showAuthDialog(options) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    return dialog.showMessageBox(mainWindow, options);
+  }
+  return dialog.showMessageBox(options);
+}
+
+async function runBrowserImport(importInfo) {
+  for (;;) {
+    const result = await importBrowserSession(authStatusCallbacks());
+
+    if (result && result.error === 'browser-busy') {
+      const choice = await showAuthDialog({
+        type: 'warning',
+        title: 'Sign in to YouTube Music',
+        message: `${importInfo.browserName} is still running`,
+        detail: result.message,
+        buttons: ['Retry now', 'Sign in in a browser', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true
+      });
+
+      if (choice.response === 1) return startBrowserAuth(authStatusCallbacks());
+      if (choice.response !== 0) {
+        sendToRenderer('auth:status', { status: 'cancelled', message: 'Browser sign-in cancelled.' });
+        return { ok: false, error: 'cancelled' };
+      }
+      continue;
+    }
+
+    if (result && result.error === 'no-session') {
+      const choice = await showAuthDialog({
+        type: 'info',
+        title: 'Sign in to YouTube Music',
+        message: 'No saved YouTube Music session found',
+        detail: result.message,
+        buttons: ['Retry import', 'Sign in in a browser', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        noLink: true
+      });
+
+      if (choice.response === 0) continue;
+      if (choice.response === 1) return startBrowserAuth(authStatusCallbacks());
+      sendToRenderer('auth:status', { status: 'cancelled', message: 'Browser sign-in cancelled.' });
+      return { ok: false, error: 'cancelled' };
+    }
+
+    return result;
+  }
+}
+
 async function beginBrowserSignIn() {
   if (browserAuthStarting) return { ok: false, error: 'already-starting' };
   browserAuthStarting = true;
   try {
-    return await startBrowserAuth({
-      onStatus: (payload) => {
-        if (IS_DEV) console.log('[auth]', payload.status, payload.message || '');
-        sendToRenderer('auth:status', payload);
-      },
-      onImported: () => {
-        if (guestContents && !guestContents.isDestroyed()) {
-          guestContents.loadURL('https://music.youtube.com/');
-        }
-        showWindow();
-      }
-    }).catch((error) => {
-      const message = error && error.message ? error.message : 'Browser sign-in failed.';
-      sendToRenderer('auth:status', { status: 'error', message });
-      return { ok: false, error: message };
+    showWindow();
+
+    const importInfo = getBrowserImportInfo();
+    if (!importInfo.available) {
+      return await startBrowserAuth(authStatusCallbacks());
+    }
+
+    const choice = await showAuthDialog({
+      type: 'question',
+      title: 'Sign in to YouTube Music',
+      message: 'Sign in to YouTube Music',
+      detail: `${importInfo.browserName} may already have a Google account signed in. YT Music Desktop can read its local cookie database and import ONLY the Google/YouTube cookies into the app. Close all ${importInfo.browserName} windows while the session is read. A temporary copy is deleted afterwards; nothing is uploaded.`,
+      buttons: ['Use browser session', 'Sign in in a browser', 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true
     });
+
+    if (choice.response === 2) {
+      sendToRenderer('auth:status', { status: 'cancelled', message: 'Browser sign-in cancelled.' });
+      return { ok: false, error: 'cancelled' };
+    }
+    if (choice.response === 1) {
+      return await startBrowserAuth(authStatusCallbacks());
+    }
+
+    return await runBrowserImport(importInfo);
+  } catch (error) {
+    const message = error && error.message ? error.message : 'Browser sign-in failed.';
+    sendToRenderer('auth:status', { status: 'error', message });
+    return { ok: false, error: message };
   } finally {
     browserAuthStarting = false;
   }
@@ -1877,6 +1965,7 @@ function bootstrap() {
   app.setAppUserModelId(APP_ID);
   nativeTheme.themeSource = 'dark';
   applyLaunchAtLogin(config.get().launchAtLogin);
+  void cleanupStaleAuthProfiles().catch(() => {});
 
   setupSession();
   registerIpc();
@@ -1962,7 +2051,8 @@ if (!gotSingleInstanceLock) {
   });
 }
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (authQuitCleanupDone) return;
   isQuitting = true;
   stopHealthWatchdog();
   stopProcessWatchdog();
@@ -1970,7 +2060,21 @@ app.on('before-quit', () => {
     clearTimeout(boundsTimer);
     boundsTimer = null;
   }
-  Promise.resolve(stopBrowserAuth({ closeBrowser: true })).catch(() => {});
+
+  // Let the temp browser profile (and any in-flight cookie write) finish
+  // cleanup before Electron tears down the session. Without this, quitting
+  // during sign-in can leave a copied cookie database in %TEMP%.
+  event.preventDefault();
+  if (authQuitCleanupStarted) return;
+  authQuitCleanupStarted = true;
+
+  Promise.resolve(stopBrowserAuth({ closeBrowser: true }))
+    .catch(() => {})
+    .finally(() => {
+      authQuitCleanupDone = true;
+      app.quit();
+    });
+
   if (desktopIntegration) desktopIntegration.destroy();
   downloads.shutdown();
   config.flush();

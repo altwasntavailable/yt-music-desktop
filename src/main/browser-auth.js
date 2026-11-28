@@ -15,6 +15,60 @@ const BROWSER_EXIT_TIMEOUT_MS = 5000;
 const PROFILE_DELETE_ATTEMPTS = 10;
 const PROFILE_DELETE_RETRY_MS = 250;
 const CDP_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const PROFILE_NAME_PATTERN = /^(Default|Profile \d+)$/;
+const COOKIE_SIDECAR_SUFFIXES = ['-wal', '-shm', '-journal'];
+const PROFILE_BUSY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const IMPORT_TEMP_PREFIX = 'ytmd-auth-';
+const BROWSER_CLOSE_TIMEOUT_MS = 3000;
+const IMPORT_TIMEOUT_MS = 90 * 1000;
+
+// Chromium-family browsers all keep their profile databases in the same
+// layout, so one importer can support every installed browser.
+const CHROMIUM_BROWSERS = [
+  {
+    id: 'chrome',
+    name: 'Chrome',
+    executablePaths: [
+      ['PROGRAMFILES', 'Google', 'Chrome', 'Application', 'chrome.exe'],
+      ['PROGRAMFILES(X86)', 'Google', 'Chrome', 'Application', 'chrome.exe'],
+      ['LOCALAPPDATA', 'Google', 'Chrome', 'Application', 'chrome.exe']
+    ],
+    userDataPath: ['Google', 'Chrome', 'User Data'],
+    progIdMatchers: ['chrome']
+  },
+  {
+    id: 'edge',
+    name: 'Edge',
+    executablePaths: [
+      ['PROGRAMFILES', 'Microsoft', 'Edge', 'Application', 'msedge.exe'],
+      ['PROGRAMFILES(X86)', 'Microsoft', 'Edge', 'Application', 'msedge.exe'],
+      ['LOCALAPPDATA', 'Microsoft', 'Edge', 'Application', 'msedge.exe']
+    ],
+    userDataPath: ['Microsoft', 'Edge', 'User Data'],
+    progIdMatchers: ['edge', 'msedge']
+  },
+  {
+    id: 'brave',
+    name: 'Brave',
+    executablePaths: [
+      ['PROGRAMFILES', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'],
+      ['PROGRAMFILES(X86)', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe'],
+      ['LOCALAPPDATA', 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe']
+    ],
+    userDataPath: ['BraveSoftware', 'Brave-Browser', 'User Data'],
+    progIdMatchers: ['brave']
+  },
+  {
+    id: 'vivaldi',
+    name: 'Vivaldi',
+    executablePaths: [
+      ['PROGRAMFILES', 'Vivaldi', 'Application', 'vivaldi.exe'],
+      ['LOCALAPPDATA', 'Vivaldi', 'Application', 'vivaldi.exe']
+    ],
+    userDataPath: ['Vivaldi', 'User Data'],
+    progIdMatchers: ['vivaldi']
+  }
+];
 
 let active = null;
 
@@ -41,40 +95,319 @@ function getDefaultBrowserProgId() {
   }
 }
 
-function findBrowserExecutable() {
-  const candidates = [];
-  const add = (base, ...parts) => {
-    if (!base) return;
-    const candidate = path.join(base, ...parts);
-    if (fs.existsSync(candidate)) candidates.push(candidate);
-  };
+function resolveEnvPath(env, parts) {
+  const [key, ...rest] = parts;
+  const base = env && env[key];
+  return base ? path.join(base, ...rest) : '';
+}
 
-  add(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe');
-  add(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe');
-  add(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe');
-  add(process.env.PROGRAMFILES, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
-  add(process.env['PROGRAMFILES(X86)'], 'Microsoft', 'Edge', 'Application', 'msedge.exe');
-  add(process.env.LOCALAPPDATA, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
-  add(process.env.PROGRAMFILES, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe');
-  add(process.env['PROGRAMFILES(X86)'], 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe');
-  add(process.env.LOCALAPPDATA, 'BraveSoftware', 'Brave-Browser', 'Application', 'brave.exe');
-  add(process.env.PROGRAMFILES, 'Vivaldi', 'Application', 'vivaldi.exe');
-  add(process.env.LOCALAPPDATA, 'Vivaldi', 'Application', 'vivaldi.exe');
+function findBrowserInstallations(options = {}) {
+  const env = options.env || process.env;
+  const fileExists = options.fileExists || fs.existsSync;
+  const usesExplicitProgId = Object.prototype.hasOwnProperty.call(options, 'progId');
+  const progId = String(
+    usesExplicitProgId ? options.progId : getDefaultBrowserProgId() || ''
+  ).toLowerCase();
 
-  const progId = getDefaultBrowserProgId();
-  if (progId) {
-    const preferred = candidates.find((candidate) => {
-      const name = path.basename(candidate).toLowerCase();
-      if (progId.includes('chrome')) return name === 'chrome.exe';
-      if (progId.includes('edge')) return name === 'msedge.exe';
-      if (progId.includes('brave')) return name === 'brave.exe';
-      if (progId.includes('vivaldi')) return name === 'vivaldi.exe';
-      return false;
-    });
-    if (preferred) return preferred;
+  const installations = CHROMIUM_BROWSERS.map((definition, order) => {
+    const executable = definition.executablePaths
+      .map((parts) => resolveEnvPath(env, parts))
+      .find((candidate) => candidate && fileExists(candidate)) || '';
+    const userDataDir = resolveEnvPath(env, ['LOCALAPPDATA', ...definition.userDataPath]);
+    const hasUserDataDir = Boolean(userDataDir) && fileExists(userDataDir);
+    const isDefault = Boolean(progId)
+      && definition.progIdMatchers.some((matcher) => progId.includes(matcher));
+
+    return {
+      id: definition.id,
+      name: definition.name,
+      executable,
+      userDataDir: hasUserDataDir ? userDataDir : '',
+      isDefault,
+      order
+    };
+  }).filter((installation) => installation.executable || installation.userDataDir);
+
+  // Keep the existing default-browser preference, then the historical
+  // Chrome → Edge → Brave → Vivaldi fallback order.
+  installations.sort((a, b) => {
+    if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1;
+    return a.order - b.order;
+  });
+
+  return installations;
+}
+
+function findBrowserExecutable(options = {}) {
+  const installation = findBrowserInstallations(options).find((item) => item.executable);
+  return installation ? installation.executable : '';
+}
+
+/**
+ * Finds the active cookie database for a Chromium profile. Modern browsers
+ * store it under Network\Cookies; older profiles used Cookies directly.
+ */
+function findCookieDatabase(profileDir, options = {}) {
+  if (!profileDir) return null;
+  const fileExists = options.fileExists || fs.existsSync;
+  const statSync = options.statSync || fs.statSync;
+
+  for (const relativeCookiePath of [path.join('Network', 'Cookies'), 'Cookies']) {
+    const absoluteCookiePath = path.join(profileDir, relativeCookiePath);
+    let isFile = false;
+    try {
+      isFile = fileExists(absoluteCookiePath) && statSync(absoluteCookiePath).isFile();
+    } catch {
+      isFile = false;
+    }
+    if (!isFile) continue;
+
+    const relativeFiles = [relativeCookiePath];
+    for (const suffix of COOKIE_SIDECAR_SUFFIXES) {
+      const relative = `${relativeCookiePath}${suffix}`;
+      let sidecarExists = false;
+      try {
+        sidecarExists = fileExists(path.join(profileDir, relative));
+      } catch {
+        sidecarExists = false;
+      }
+      if (sidecarExists) relativeFiles.push(relative);
+    }
+
+    return {
+      relativeCookiePath,
+      absoluteCookiePath,
+      relativeFiles,
+      files: relativeFiles.map((relative) => path.join(profileDir, relative))
+    };
   }
 
-  return candidates[0] || '';
+  return null;
+}
+
+function listChromiumProfileNames(userDataDir, options = {}) {
+  const readdirSync = options.readdirSync || fs.readdirSync;
+  let entries;
+  try {
+    entries = readdirSync(userDataDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(entries)) return [];
+
+  const names = [];
+  for (const entry of entries) {
+    const name = String((entry && entry.name) || '');
+    if (!PROFILE_NAME_PATTERN.test(name)) continue;
+    if (entry && typeof entry.isDirectory === 'function' && !entry.isDirectory()) continue;
+    names.push(name);
+  }
+
+  return names.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+function readLastUsedProfile(userDataDir, options = {}) {
+  const readFileSync = options.readFileSync || fs.readFileSync;
+  try {
+    const raw = readFileSync(path.join(userDataDir, 'Local State'), 'utf8');
+    const parsed = JSON.parse(raw);
+    const lastUsed = parsed && parsed.profile && parsed.profile.last_used;
+    return typeof lastUsed === 'string' ? lastUsed : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Selects the profile Chromium itself most likely considers active: the
+ * last-used profile when it still has cookies, otherwise the profile whose
+ * cookie database was modified most recently.
+ */
+function selectBrowserProfile(userDataDir, options = {}) {
+  if (!userDataDir) return null;
+  const profiles = listChromiumProfileNames(userDataDir, options);
+  if (!profiles.length) return null;
+
+  const statSync = options.statSync || fs.statSync;
+  const lastUsed = readLastUsedProfile(userDataDir, options);
+  if (lastUsed && PROFILE_NAME_PATTERN.test(lastUsed) && profiles.includes(lastUsed)) {
+    const directory = path.join(userDataDir, lastUsed);
+    const database = findCookieDatabase(directory, options);
+    if (database) {
+      return { name: lastUsed, directory, database, usedLastUsed: true };
+    }
+  }
+
+  let best = null;
+  for (const name of profiles) {
+    const directory = path.join(userDataDir, name);
+    const database = findCookieDatabase(directory, options);
+    if (!database) continue;
+
+    let modifiedAt = 0;
+    try {
+      modifiedAt = Number(statSync(database.absoluteCookiePath).mtimeMs) || 0;
+    } catch {
+      continue;
+    }
+
+    if (!best || modifiedAt > best.modifiedAt) {
+      best = { name, directory, database, usedLastUsed: false, modifiedAt };
+    }
+  }
+
+  return best;
+}
+
+function isProfileBusyError(error) {
+  return Boolean(error && PROFILE_BUSY_CODES.has(String(error.code || '')));
+}
+
+/**
+ * Copies only the files Chromium needs to open the profile read-only: the
+ * top-level Local State (cookie encryption key), the selected profile's
+ * cookie database and sidecars, and Preferences. The real profile is never
+ * written to or modified.
+ */
+async function copyProfileForImport({
+  userDataDir,
+  profileName,
+  destinationRoot,
+  fileExists = fs.existsSync,
+  copyFile = fs.promises.copyFile,
+  readFile = fs.promises.readFile,
+  writeFile = fs.promises.writeFile,
+  mkdir = fs.promises.mkdir
+} = {}) {
+  if (!userDataDir || !destinationRoot) {
+    const error = new Error('A source browser profile and destination are required.');
+    error.code = 'EINVAL';
+    throw error;
+  }
+
+  const name = String(profileName || '');
+  if (!PROFILE_NAME_PATTERN.test(name)) {
+    const error = new Error('Invalid browser profile name.');
+    error.code = 'EINVAL';
+    throw error;
+  }
+
+  const sourceProfileDir = path.join(userDataDir, name);
+  const database = findCookieDatabase(sourceProfileDir, { fileExists });
+  if (!database) {
+    const error = new Error('The browser profile does not contain a cookie database.');
+    error.code = 'ENOCOOKIES';
+    throw error;
+  }
+
+  const destinationProfileDir = path.join(destinationRoot, 'Default');
+  await mkdir(destinationProfileDir, { recursive: true });
+
+  const filesToCopy = [];
+  const localState = path.join(userDataDir, 'Local State');
+  let osCrypt = null;
+  if (fileExists(localState)) {
+    try {
+      const parsed = JSON.parse(await readFile(localState, 'utf8'));
+      osCrypt = parsed && parsed.os_crypt && typeof parsed.os_crypt === 'object'
+        ? parsed.os_crypt
+        : null;
+    } catch {
+      osCrypt = null;
+    }
+  }
+
+  // Only the cookie encryption key is needed. Copying the full Local State
+  // would also copy unrelated browser profile metadata into the temp folder.
+  await writeFile(
+    path.join(destinationRoot, 'Local State'),
+    JSON.stringify(osCrypt ? { os_crypt: osCrypt } : {}),
+    { mode: 0o600 }
+  );
+
+  for (const relative of database.relativeFiles) {
+    filesToCopy.push({
+      source: path.join(sourceProfileDir, relative),
+      destination: path.join(destinationProfileDir, relative)
+    });
+  }
+
+  for (const file of filesToCopy) {
+    await mkdir(path.dirname(file.destination), { recursive: true });
+    await copyFile(file.source, file.destination);
+  }
+
+  return {
+    profileDirectory: destinationProfileDir,
+    copied: [
+      'Local State',
+      ...filesToCopy.map((file) => path.relative(destinationRoot, file.destination))
+    ]
+  };
+}
+
+function findImportCandidates(options = {}) {
+  const candidates = [];
+  const installations = findBrowserInstallations(options);
+  const statSync = options.statSync || fs.statSync;
+
+  for (const installation of installations) {
+    if (!installation.executable || !installation.userDataDir) continue;
+    const lastUsed = readLastUsedProfile(installation.userDataDir, options);
+    const profiles = listChromiumProfileNames(installation.userDataDir, options)
+      .map((profileName) => {
+        const profileDirectory = path.join(installation.userDataDir, profileName);
+        const database = findCookieDatabase(profileDirectory, options);
+        if (!database) return null;
+        let modifiedAt = 0;
+        try {
+          modifiedAt = Number(statSync(database.absoluteCookiePath).mtimeMs) || 0;
+        } catch {
+          return null;
+        }
+        return {
+          profileName,
+          profileDirectory,
+          database,
+          modifiedAt,
+          isLastUsed: profileName === lastUsed
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (a.isLastUsed !== b.isLastUsed) return a.isLastUsed ? -1 : 1;
+        return b.modifiedAt - a.modifiedAt;
+      });
+
+    for (const profile of profiles) {
+      candidates.push({
+        ...installation,
+        profileName: profile.profileName,
+        profileDirectory: profile.profileDirectory,
+        database: profile.database
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function findImportSource(options = {}) {
+  return findImportCandidates(options)[0] || null;
+}
+
+function getBrowserImportInfo(options = {}) {
+  const source = findImportSource(options);
+  if (!source) {
+    return { available: false, browserName: '', profileName: '' };
+  }
+
+  return {
+    available: true,
+    browserId: source.id,
+    browserName: source.name,
+    profileName: source.profileName
+  };
 }
 
 function cookieDomain(cookie) {
@@ -175,12 +508,14 @@ function buildCookieDetails(cookie) {
   return details;
 }
 
-async function importCookies(cookies) {
+async function importCookies(cookies, options = {}) {
   const ses = session.fromPartition(PARTITION);
+  const isCancelled = typeof options.isCancelled === 'function' ? options.isCancelled : null;
   let imported = 0;
   const list = Array.isArray(cookies) ? cookies : [];
 
   for (const cookie of list.filter(isRelevantCookie)) {
+    if (isCancelled && isCancelled()) break;
     if (!cookie || !cookie.name) continue;
     const details = buildCookieDetails(cookie);
 
@@ -188,7 +523,7 @@ async function importCookies(cookies) {
       await ses.cookies.set(details);
       imported += 1;
     } catch (error) {
-      console.warn('[auth] Could not import cookie:', cookie.name, error.message);
+      console.warn('[auth] Could not import a browser cookie:', error.message);
     }
   }
 
@@ -199,6 +534,25 @@ async function importCookies(cookies) {
   }
 
   return imported;
+}
+
+async function verifyImportedSession() {
+  try {
+    const ses = session.fromPartition(PARTITION);
+    const cookies = await ses.cookies.get({});
+    return hasGoogleSession(cookies);
+  } catch {
+    return false;
+  }
+}
+
+async function clearImportedCookies() {
+  try {
+    const ses = session.fromPartition(PARTITION);
+    await ses.clearStorageData({ storages: ['cookies'] });
+  } catch {
+    // The next app launch will use whatever cookies remain.
+  }
 }
 
 /**
@@ -420,6 +774,21 @@ async function removeProfileDir(profileDir) {
   return false;
 }
 
+async function cleanupStaleAuthProfiles() {
+  const tempRoot = app.getPath('temp');
+  try {
+    const entries = await fs.promises.readdir(tempRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry || !entry.isDirectory() || !entry.name.startsWith(IMPORT_TEMP_PREFIX)) continue;
+      await removeProfileDir(path.join(tempRoot, entry.name));
+    }
+  } catch {
+    // A missing temp folder is fine; a locked one will be retried next launch.
+  }
+
+  await removeProfileDir(path.join(app.getPath('userData'), 'browser-signin'));
+}
+
 function emitStatus(auth, payload) {
   try {
     if (auth && typeof auth.onStatus === 'function') auth.onStatus(payload);
@@ -448,6 +817,18 @@ async function stopBrowserAuth({ closeBrowser = false, status = null } = {}) {
     } catch {
       // The transport may already be closed.
     }
+  }
+
+  // A sign-out can arrive while cookies are being written. Let that write
+  // settle before the caller clears the session, otherwise late cookies could
+  // recreate a signed-in state after "Signed out".
+  if (current.pendingCookieImport) {
+    try {
+      await current.pendingCookieImport;
+    } catch {
+      // The import path reports its own failure.
+    }
+    current.pendingCookieImport = null;
   }
 
   if (closeBrowser) terminateBrowser(current.child);
@@ -498,7 +879,7 @@ async function startBrowserAuth({ onStatus, onImported } = {}) {
 
   const executable = findBrowserExecutable();
   if (!executable) {
-    const message = 'Could not find Chrome or Edge for browser sign-in. Install Chrome or use Edge.';
+    const message = 'Could not find Chrome, Edge, Brave, or Vivaldi for browser sign-in. Install one of them and try again.';
     status({ status: 'error', message });
     return { ok: false, error: message };
   }
@@ -520,6 +901,11 @@ async function startBrowserAuth({ onStatus, onImported } = {}) {
       // opened, so another local process cannot attach while Google cookies
       // are live in the browser profile.
       '--remote-debugging-pipe',
+      // Google rejects Chrome when navigator.webdriver is true, which remote
+      // debugging alone enables. These switches are required for the sign-in
+      // page to behave like a normal browser; the private pipe stays in use.
+      '--disable-blink-features=AutomationControlled',
+      '--test-type',
       '--no-first-run',
       '--no-default-browser-check',
       '--new-window',
@@ -545,7 +931,8 @@ async function startBrowserAuth({ onStatus, onImported } = {}) {
     onImported: typeof onImported === 'function' ? onImported : null,
     checking: false,
     importing: false,
-    imported: false
+    imported: false,
+    pendingCookieImport: null
   };
   active = auth;
 
@@ -616,17 +1003,27 @@ async function startBrowserAuth({ onStatus, onImported } = {}) {
       auth.importing = true;
       let imported = 0;
       try {
-        imported = await importCookies(cookies);
+        auth.pendingCookieImport = importCookies(cookies, {
+          isCancelled: () => active !== auth
+        });
+        imported = await auth.pendingCookieImport;
       } catch (error) {
         auth.importing = false;
         if (active !== auth) return;
         await stopBrowserAuth({ closeBrowser: true });
         status({ status: 'error', message: `Could not import the browser session: ${error.message}` });
         return;
+      } finally {
+        auth.pendingCookieImport = null;
       }
 
-      if (!imported) {
+      if (active !== auth) return;
+
+      if (!imported || !(await verifyImportedSession())) {
         auth.importing = false;
+        await clearImportedCookies();
+        await stopBrowserAuth({ closeBrowser: true });
+        status({ status: 'error', message: 'The browser session could not be imported. Try signing in again.' });
         return;
       }
 
@@ -659,6 +1056,302 @@ async function startBrowserAuth({ onStatus, onImported } = {}) {
   return { ok: true };
 }
 
+async function closeHeadlessBrowser(auth) {
+  if (!auth) return;
+  if (auth.transport && !auth.transport.isClosed()) {
+    try {
+      await auth.transport.send('Browser.close', {}, BROWSER_CLOSE_TIMEOUT_MS);
+    } catch {
+      // The browser may close the pipe before replying; force termination
+      // is handled by stopBrowserAuth below.
+    }
+  }
+  if (auth.child) {
+    await waitForChildExit(auth.child, BROWSER_CLOSE_TIMEOUT_MS);
+  }
+}
+
+/**
+ * Imports the Google/YouTube session already present in one installed
+ * Chromium-family browser profile. Only the cookie database is copied to a
+ * temporary profile; the real profile is never modified. The imported cookies
+ * still go through importCookies(), which keeps only Google/YouTube domains.
+ */
+async function importBrowserSessionFromSource(source, { onStatus, onImported } = {}) {
+  const notify = typeof onStatus === 'function' ? onStatus : null;
+  const status = (payload) => {
+    if (!notify) return;
+    try {
+      notify(payload);
+    } catch {
+      // The renderer may be closing.
+    }
+  };
+
+  if (active) {
+    status({ status: 'info', message: 'Browser sign-in is already open.' });
+    return { ok: false, error: 'already-open' };
+  }
+
+  if (!source) {
+    const message = 'No Chrome, Edge, Brave, or Vivaldi profile with a Google/YouTube session was found. Sign in to YouTube Music in your browser first.';
+    status({ status: 'error', message });
+    return { ok: false, error: 'no-browser', message };
+  }
+
+  let profileRoot;
+  try {
+    profileRoot = await fs.promises.mkdtemp(path.join(app.getPath('temp'), IMPORT_TEMP_PREFIX));
+  } catch {
+    const message = 'Could not create a temporary browser profile for the import.';
+    status({ status: 'error', message });
+    return { ok: false, error: 'import-failed', message };
+  }
+
+  const auth = {
+    kind: 'import',
+    browserName: source.name,
+    child: null,
+    transport: null,
+    timeout: null,
+    pendingCookieImport: null,
+    profileDir: profileRoot,
+    onStatus: status,
+    onImported: typeof onImported === 'function' ? onImported : null,
+    imported: false
+  };
+  active = auth;
+
+  auth.timeout = setTimeout(() => {
+    if (active !== auth) return;
+    status({ status: 'error', message: 'Reading the browser session timed out. Close the browser and try again.' });
+    void stopBrowserAuth({ closeBrowser: true });
+  }, IMPORT_TIMEOUT_MS);
+
+  status({ status: 'started', message: `Reading the saved Google session from ${source.name}…` });
+
+  try {
+    await copyProfileForImport({
+      userDataDir: source.userDataDir,
+      profileName: source.profileName,
+      destinationRoot: profileRoot
+    });
+  } catch (error) {
+    if (active !== auth) {
+      await removeProfileDir(profileRoot);
+      return { ok: false, error: 'cancelled' };
+    }
+
+    await stopBrowserAuth({ closeBrowser: false });
+    await removeProfileDir(profileRoot);
+
+    if (isProfileBusyError(error)) {
+      const message = `${source.name} is still using its profile. Close all ${source.name} windows, then try again.`;
+      status({ status: 'error', message });
+      return { ok: false, error: 'browser-busy', message };
+    }
+
+    console.warn('[auth] Could not copy the browser profile:', error.code || 'unknown error');
+    const message = `Could not read the saved ${source.name} session. Close ${source.name} and try again.`;
+    status({ status: 'error', message });
+    return { ok: false, error: 'import-failed', message };
+  }
+
+  if (active !== auth) {
+    await removeProfileDir(profileRoot);
+    return { ok: false, error: 'cancelled' };
+  }
+
+  status({ status: 'info', message: `Reading the saved Google/YouTube cookies from ${source.name}…` });
+
+  let child;
+  try {
+    child = spawn(source.executable, [
+      `--user-data-dir=${profileRoot}`,
+      '--profile-directory=Default',
+      '--headless=new',
+      '--disable-gpu',
+      // Keep the copy off any localhost debugging port. The copied profile is
+      // only used to read cookies and is deleted immediately afterwards.
+      '--remote-debugging-pipe',
+      '--disable-blink-features=AutomationControlled',
+      '--test-type',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-extensions',
+      'about:blank'
+    ], {
+      detached: false,
+      stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+  } catch {
+    await stopBrowserAuth({ closeBrowser: false });
+    await removeProfileDir(profileRoot);
+    const message = `Could not start ${source.name} for the session import.`;
+    status({ status: 'error', message });
+    return { ok: false, error: 'browser-error', message };
+  }
+
+  auth.child = child;
+  child.on('error', (error) => {
+    // A failed launch can emit 'error' before the pipe transport exists;
+    // closing an existing transport makes pending commands fail immediately.
+    auth.childError = error;
+    if (auth.transport) {
+      try {
+        auth.transport.close(error);
+      } catch {
+        // The transport may already be closed.
+      }
+    }
+  });
+
+  try {
+    auth.transport = createCdpPipeTransport(child.stdio[4], child.stdio[3]);
+  } catch {
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = `Could not connect to ${source.name} for the session import.`;
+    status({ status: 'error', message });
+    return { ok: false, error: 'browser-error', message };
+  }
+
+  if (active !== auth) return { ok: false, error: 'cancelled' };
+
+  if (auth.childError) {
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = `Could not start ${source.name} for the session import.`;
+    status({ status: 'error', message });
+    return { ok: false, error: 'browser-error', message };
+  }
+
+  let cookies;
+  try {
+    await auth.transport.send('Browser.getVersion', {}, CDP_STARTUP_TIMEOUT_MS);
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    const result = await auth.transport.send('Storage.getCookies', {}, CDP_COMMAND_TIMEOUT_MS);
+    cookies = result && Array.isArray(result.cookies) ? result.cookies : [];
+  } catch {
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await closeHeadlessBrowser(auth);
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = `Could not read the saved session from ${source.name}. Close ${source.name} and try again.`;
+    status({ status: 'error', message });
+    return { ok: false, error: 'browser-error', message };
+  }
+
+  if (active !== auth) return { ok: false, error: 'cancelled' };
+
+  if (!hasGoogleSession(cookies)) {
+    await closeHeadlessBrowser(auth);
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = `No signed-in Google/YouTube session was found in ${source.name}. Sign in to YouTube Music in ${source.name} first, or use the separate browser sign-in.`;
+    status({ status: 'error', message });
+    return { ok: false, error: 'no-session', message };
+  }
+
+  let imported = 0;
+  try {
+    auth.pendingCookieImport = importCookies(cookies, {
+      isCancelled: () => active !== auth
+    });
+    imported = await auth.pendingCookieImport;
+  } catch {
+    auth.pendingCookieImport = null;
+    await closeHeadlessBrowser(auth);
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = 'Could not import the browser session into the app.';
+    status({ status: 'error', message });
+    return { ok: false, error: 'import-failed', message };
+  } finally {
+    auth.pendingCookieImport = null;
+  }
+
+  if (active !== auth) return { ok: false, error: 'cancelled' };
+
+  if (!imported || !(await verifyImportedSession())) {
+    await clearImportedCookies();
+    await closeHeadlessBrowser(auth);
+    if (active !== auth) return { ok: false, error: 'cancelled' };
+    await stopBrowserAuth({ closeBrowser: true });
+    const message = 'The browser session could not be imported. Try signing in again.';
+    status({ status: 'error', message });
+    return { ok: false, error: 'import-failed', message };
+  }
+
+  auth.imported = true;
+  await closeHeadlessBrowser(auth);
+  if (active !== auth) return { ok: false, error: 'cancelled' };
+  await stopBrowserAuth({ closeBrowser: true });
+
+  emitStatus(auth, { status: 'success', message: 'Signed in! Loading your YouTube Music library…' });
+
+  if (typeof onImported === 'function') {
+    try {
+      onImported({ imported });
+    } catch (error) {
+      console.warn('[auth] Could not finish browser sign-in:', error.message);
+    }
+  }
+
+  return { ok: true, imported };
+}
+
+async function importBrowserSession({ onStatus, onImported } = {}) {
+  const notify = typeof onStatus === 'function' ? onStatus : null;
+  const status = (payload) => {
+    if (!notify) return;
+    try {
+      notify(payload);
+    } catch {
+      // The renderer may be closing.
+    }
+  };
+
+  const candidates = findImportCandidates();
+  if (!candidates.length) {
+    const message = 'No Chrome, Edge, Brave, or Vivaldi profile with a Google/YouTube session was found. Sign in to YouTube Music in your browser first.';
+    status({ status: 'error', message });
+    return { ok: false, error: 'no-browser', message };
+  }
+
+  let firstBusy = null;
+  let lastFailure = null;
+
+  for (let index = 0; index < candidates.length; index += 1) {
+    const source = candidates[index];
+    if (index > 0) {
+      status({
+        status: 'info',
+        message: `Checking ${source.name} (${source.profileName})…`
+      });
+    }
+
+    const result = await importBrowserSessionFromSource(source, { onStatus, onImported });
+    if (result && result.ok) return result;
+    if (result && (result.error === 'cancelled' || result.error === 'already-open')) {
+      return result;
+    }
+    if (result && result.error === 'browser-busy' && !firstBusy) {
+      firstBusy = result;
+    }
+    lastFailure = result || lastFailure;
+  }
+
+  if (firstBusy) return firstBusy;
+
+  if (lastFailure) return lastFailure;
+
+  const message = 'No signed-in Google/YouTube session was found in your browser profiles.';
+  status({ status: 'error', message });
+  return { ok: false, error: 'no-session', message };
+}
+
 async function clearBrowserSignInProfile() {
   await stopBrowserAuth({ closeBrowser: true });
   const profileDir = path.join(app.getPath('userData'), 'browser-signin');
@@ -667,8 +1360,16 @@ async function clearBrowserSignInProfile() {
 
 module.exports = {
   startBrowserAuth,
+  importBrowserSession,
+  getBrowserImportInfo,
   stopBrowserAuth,
   clearBrowserSignInProfile,
+  cleanupStaleAuthProfiles,
+  findImportCandidates,
+  selectBrowserProfile,
+  findCookieDatabase,
+  copyProfileForImport,
+  isProfileBusyError,
   hasGoogleSession,
   importCookies,
   buildCookieDetails,

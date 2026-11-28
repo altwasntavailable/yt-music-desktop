@@ -41,8 +41,8 @@ Unofficial. Not affiliated with YouTube or Google.
 
 Download **[the latest release](https://github.com/altwasntavailable/yt-music-desktop/releases/latest)**.
 
-- **Installer:** [YT-Music-Desktop-Setup-1.3.0.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.3.0.exe)
-- **Portable:** [YT-Music-Desktop-Portable-1.3.0.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.3.0.exe)
+- **Installer:** [YT-Music-Desktop-Setup-1.3.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.3.1.exe)
+- **Portable:** [YT-Music-Desktop-Portable-1.3.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.3.1.exe)
 - **All releases:** https://github.com/altwasntavailable/yt-music-desktop/releases
 - **Verify:** compare each downloaded file with `SHA256SUMS.txt` from the same release.
 - **Winget:** manifest prepared in [`packaging/winget`](packaging/winget); submission to the Winget repository is pending.
@@ -65,7 +65,7 @@ Download **[the latest release](https://github.com/altwasntavailable/yt-music-de
 - **Offline-first** - if YouTube Music fails to load or the player crashes, the error screen offers the **Offline library**, so downloaded music stays playable without the page.
 - **No "Still watching?" interruptions** — automatically dismisses YouTube's “Still watching?” / “Video paused” prompt and resumes playback.
 - **Your real YouTube Music library** — sign in with Google and use your playlists, liked songs, home feed, search, radio, and queue.
-- **Browser-based sign-in** — Google blocks embedded sign-in, so the app opens a real Chrome/Edge window and imports the session automatically.
+- **Browser-based sign-in** - Google blocks embedded sign-in. The app can import the Google session already signed in to Chrome, Edge, Brave, or Vivaldi, or open a real browser window for sign-in.
 - **Audio-only mode** — hides video and keeps album artwork on screen.
 - **SponsorBlock** — skips community-submitted sponsor reads, intros, outros, and non-music sections using the public SponsorBlock database.
 - **Lyrics panel** — time-synced lyrics from [LRCLIB](https://lrclib.net), with plain-text fallback and a button to open YouTube Music's own lyrics.
@@ -84,24 +84,24 @@ Download **[the latest release](https://github.com/altwasntavailable/yt-music-de
 - [PRIVACY.md](PRIVACY.md) lists what is stored locally and which third-party services the app contacts.
 - [LICENSE](LICENSE) covers the project under the MIT license.
 - Downloaded `yt-dlp` binaries are verified against the official SHA-256 checksum list before the app runs them. In-app updates use yt-dlp's own updater, verify the resulting binary against the same checksum list, and are offered only for the app-managed Windows copy.
-- Browser sign-in uses a private stdio debugging pipe; it does not open a localhost debugging port while Google session cookies are live. The temporary browser profile is deleted after a successful import.
+- Browser sign-in can import the existing Google/YouTube session from Chrome, Edge, Brave, or Vivaldi with your consent. It copies the selected browser's cookie database and cookie key to a temporary profile, imports only Google/YouTube cookies, and deletes the copy. The real browser profile is never modified. The separate-browser fallback uses a private stdio debugging pipe; it does not open a localhost debugging port while Google session cookies are live.
 - IPC handlers only accept calls from the app's own desktop renderer; the embedded YouTube Music page cannot call desktop APIs.
 - Offline playback is served through a custom `ytmd-media` protocol that resolves only files in the local download index and streams them with HTTP range support.
 - No telemetry, analytics, or developer-operated servers.
 
 ## Release integrity
 
-Each release publishes `SHA256SUMS.txt` next to the installer and portable build. The examples below use 1.3.0:
+Each release publishes `SHA256SUMS.txt` next to the installer and portable build. The examples below use 1.3.1:
 
 ```powershell
-certutil -hashfile YT-Music-Desktop-Setup-1.3.0.exe SHA256
+certutil -hashfile YT-Music-Desktop-Setup-1.3.1.exe SHA256
 ```
 
 Starting with the automated release workflow, builds also attach GitHub build
 provenance attestations. Verify one with the GitHub CLI:
 
 ```powershell
-gh attestation verify YT-Music-Desktop-Setup-1.3.0.exe --repo altwasntavailable/yt-music-desktop
+gh attestation verify YT-Music-Desktop-Setup-1.3.1.exe --repo altwasntavailable/yt-music-desktop
 ```
 
 Code signing is not configured yet; SmartScreen may warn on first launch. See
@@ -110,12 +110,12 @@ Code signing is not configured yet; SmartScreen may warn on first launch. See
 ## First launch
 
 1. Open the app and click **Sign in** in the top-right corner of YouTube Music.
-2. Google blocks sign-in inside embedded browser shells, so the app opens a real Chrome or Edge window for the Google sign-in page.
-3. Sign in with the Google account that owns your YouTube Music library. When the browser reaches YouTube Music, the app imports the Google/YouTube session cookies into its own profile, closes the browser, and reloads your library.
+2. Choose **Use browser session** to reuse the Google account already signed in to Chrome, Edge, Brave, or Vivaldi. If that browser is open, close it when prompted so the app can read its local session; then choose **Retry now**. The app imports only Google/YouTube cookies into its own profile and deletes the temporary copy. Nothing is uploaded.
+3. If you prefer to sign in directly, choose **Sign in in a browser**. A real Chrome, Edge, Brave, or Vivaldi window opens for the Google sign-in page. Sign in with the Google account that owns your YouTube Music library; the app imports the session when the browser reaches YouTube Music and closes it.
 4. The app remembers the session in its own Electron profile, so you only need to sign in once.
 5. Click the **Lyrics** button in the app's title bar (or press `Ctrl+L`) while a song is playing.
 
-You can also start this flow manually from **Settings → Account → Sign in with browser**. The app never sees your Google password; it only reads the cookies from the browser profile it opened. Chrome, Edge, Brave, or Vivaldi is required for automatic session import (Edge is included with Windows). The temporary browser profile is removed after a successful import, and signing out clears both the app session and any remaining sign-in profile.
+You can also start this flow manually from **Settings → Account → Sign in with browser**. The app never sees your Google password. Chrome, Edge, Brave, or Vivaldi is required for automatic session import (Edge is included with Windows). The temporary copies are removed after import, and signing out clears both the app session and any remaining sign-in profile.
 
 ## Lyrics
 
@@ -350,7 +350,7 @@ packaging/winget/            Winget manifest for package-manager installs
 - Audio-only mode hides video visually. For music-video tracks, YouTube may still stream video data in the background.
 - The lyrics fallback is LRCLIB; coverage depends on their database. The **YT Music lyrics** button uses the site's own lyrics when available.
 - Ad blocking is best-effort. YouTube can change how ads are delivered at any time, so some ads may still appear. Blocking ads may conflict with YouTube's Terms of Service.
-- Browser sign-in requires Chrome, Edge, Brave, or Vivaldi for automatic session import. Edge is included with Windows. The app uses a dedicated browser profile, not your everyday browser profile, and never sees your password.
+- Browser sign-in requires Chrome, Edge, Brave, or Vivaldi for automatic session import. Edge is included with Windows. The app never sees your password. If you choose to import an existing session, the app reads a temporary copy of the browser's cookie database and imports only Google/YouTube cookies; the real browser profile is not modified.
 - Google may occasionally change its sign-in or YouTube Music internals. Since this app wraps the official player, most site updates are picked up automatically.
 - Discord Rich Presence uses a shared public **YouTube Music** Discord application by default. You can use your own Application ID under **Settings → Discord → Advanced** if you prefer a custom name or icon.
 - The current installer is not code-signed. Releases include SHA-256 checksums, but Windows SmartScreen may still warn. Code signing can be enabled later by configuring the standard electron-builder `CSC_LINK` / `CSC_KEY_PASSWORD` environment variables.
@@ -364,7 +364,7 @@ Check your internet connection and click **Try again**. The app loads `music.you
 The app watches both renderers and automatically restarts them if Chromium stops responding, including after the system wakes from sleep. A separate watchdog process also restarts the app if its main process hangs. If you need to force it manually, use **Reload window** or **Reload player** from the tray menu, or press `Ctrl+R` to reload the player and `Ctrl+Shift+R` to reload the app window. Watchdog restarts are logged to `watchdog.log` in the app’s user-data folder.
 
 **Google says the browser may not be secure**
-This is expected when Google blocks embedded sign-in. The app now re-routes Google sign-in to a real Chrome/Edge window and imports the session automatically. If the browser window does not open, use **Settings → Account → Sign in with browser**, or make sure Chrome or Edge is installed.
+This is Google rejecting a browser with an automation/debugging signal. The app now offers to import the existing Chrome/Edge/Brave/Vivaldi session instead, and the separate sign-in window disables that signal while keeping the private pipe. If import says the browser is still running, close all Chrome/Edge windows and choose **Retry now**. If no saved session is found, sign in to YouTube Music in that browser first or choose the separate browser sign-in.
 
 **No lyrics appear**
 LRCLIB may not have that track. Click **YT Music lyrics** to use YouTube Music's own lyrics, or **Search** to find them on the web.

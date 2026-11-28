@@ -4,6 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const {
   createDesktopIntegration,
@@ -14,7 +17,13 @@ const {
 const {
   buildCookieDetails,
   createCdpPipeTransport,
-  hasGoogleSession
+  hasGoogleSession,
+  selectBrowserProfile,
+  findCookieDatabase,
+  copyProfileForImport,
+  findImportCandidates,
+  isProfileBusyError,
+  getBrowserImportInfo
 } = require('../src/main/browser-auth');
 
 const {
@@ -195,6 +204,12 @@ test('hasGoogleSession requires both Google and YouTube session cookies', () => 
     { name: 'SID', domain: '.google.com' },
     { name: 'SAPISID', domain: '.google.com' }
   ]), false);
+
+  assert.equal(hasGoogleSession([
+    { name: 'SID', domain: '.google.com' },
+    { name: 'SAPISID', domain: '.example.com' },
+    { name: 'LOGIN_INFO', domain: '.youtube.com' }
+  ]), false, 'cookies from unrelated domains must not count');
 });
 
 test('CDP pipe transport resolves, rejects on close, and times out', async () => {
@@ -324,4 +339,315 @@ test('integration constructs and tears down safely without Electron APIs', () =>
 
   integration.destroy();
   integration.destroy();
+});
+
+test('browser import profile selection prefers a valid last-used profile', () => {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-profile-last-used-'));
+  try {
+    const defaultCookies = path.join(userDataDir, 'Default', 'Network', 'Cookies');
+    const profileCookies = path.join(userDataDir, 'Profile 1', 'Network', 'Cookies');
+    fs.mkdirSync(path.dirname(defaultCookies), { recursive: true });
+    fs.mkdirSync(path.dirname(profileCookies), { recursive: true });
+    fs.writeFileSync(defaultCookies, 'default');
+    fs.writeFileSync(profileCookies, 'profile');
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Default' }
+    }));
+
+    fs.utimesSync(defaultCookies, new Date(1000), new Date(1000));
+    fs.utimesSync(profileCookies, new Date(9000), new Date(9000));
+
+    const selected = selectBrowserProfile(userDataDir);
+    assert.equal(selected.name, 'Default');
+    assert.equal(selected.usedLastUsed, true);
+    assert.equal(selected.database.relativeCookiePath, path.join('Network', 'Cookies'));
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
+test('browser import profile selection falls back to the newest cookie database', () => {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-profile-newest-'));
+  try {
+    const defaultCookies = path.join(userDataDir, 'Default', 'Network', 'Cookies');
+    const profileOneCookies = path.join(userDataDir, 'Profile 1', 'Network', 'Cookies');
+    fs.mkdirSync(path.dirname(defaultCookies), { recursive: true });
+    fs.mkdirSync(path.dirname(profileOneCookies), { recursive: true });
+    fs.mkdirSync(path.join(userDataDir, 'Profile 2'), { recursive: true });
+    fs.writeFileSync(defaultCookies, 'default');
+    fs.writeFileSync(profileOneCookies, 'profile one');
+    fs.utimesSync(defaultCookies, new Date(1000), new Date(1000));
+    fs.utimesSync(profileOneCookies, new Date(5000), new Date(5000));
+
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Profile 9' }
+    }));
+    let selected = selectBrowserProfile(userDataDir);
+    assert.equal(selected.name, 'Profile 1');
+    assert.equal(selected.usedLastUsed, false);
+
+    // A last-used profile that exists but has no cookie database must not win.
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Profile 2' }
+    }));
+    selected = selectBrowserProfile(userDataDir);
+    assert.equal(selected.name, 'Profile 1');
+    assert.equal(selected.usedLastUsed, false);
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  }
+});
+
+test('cookie database discovery supports Network and legacy paths with sidecars', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-cookies-'));
+  try {
+    const modernProfile = path.join(root, 'modern');
+    const modernDir = path.join(modernProfile, 'Network');
+    fs.mkdirSync(modernDir, { recursive: true });
+    fs.writeFileSync(path.join(modernDir, 'Cookies'), 'db');
+    fs.writeFileSync(path.join(modernDir, 'Cookies-wal'), 'wal');
+    fs.writeFileSync(path.join(modernDir, 'Cookies-shm'), 'shm');
+
+    const modern = findCookieDatabase(modernProfile);
+    assert.equal(modern.relativeCookiePath, path.join('Network', 'Cookies'));
+    assert.deepEqual(modern.relativeFiles, [
+      path.join('Network', 'Cookies'),
+      path.join('Network', 'Cookies-wal'),
+      path.join('Network', 'Cookies-shm')
+    ]);
+
+    const legacyProfile = path.join(root, 'legacy');
+    fs.mkdirSync(legacyProfile, { recursive: true });
+    fs.writeFileSync(path.join(legacyProfile, 'Cookies'), 'db');
+    fs.writeFileSync(path.join(legacyProfile, 'Cookies-journal'), 'journal');
+
+    const legacy = findCookieDatabase(legacyProfile);
+    assert.equal(legacy.relativeCookiePath, 'Cookies');
+    assert.deepEqual(legacy.relativeFiles, ['Cookies', 'Cookies-journal']);
+
+    const emptyProfile = path.join(root, 'empty');
+    fs.mkdirSync(emptyProfile, { recursive: true });
+    assert.equal(findCookieDatabase(emptyProfile), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('copyProfileForImport copies only the cookie key, Cookies, and Preferences', async () => {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-source-'));
+  const destinationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-target-'));
+  try {
+    const sourceProfile = path.join(userDataDir, 'Profile 1');
+    const sourceNetwork = path.join(sourceProfile, 'Network');
+    fs.mkdirSync(sourceNetwork, { recursive: true });
+    fs.mkdirSync(path.join(userDataDir, 'Default', 'Network'), { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'Default', 'Network', 'Cookies'), 'other profile');
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Profile 1' },
+      os_crypt: { encrypted_key: 'fake-key' },
+      unrelated: 'private'
+    }));
+    fs.writeFileSync(path.join(userDataDir, 'SingletonLock'), 'unrelated');
+    fs.writeFileSync(path.join(sourceProfile, 'Preferences'), '{"account_info":[]}');
+    fs.writeFileSync(path.join(sourceNetwork, 'Cookies'), 'cookie-db');
+    fs.writeFileSync(path.join(sourceNetwork, 'Cookies-wal'), 'wal');
+    fs.writeFileSync(path.join(sourceProfile, 'History'), 'private history');
+
+    const result = await copyProfileForImport({
+      userDataDir,
+      profileName: 'Profile 1',
+      destinationRoot
+    });
+
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(destinationRoot, 'Local State'), 'utf8')),
+      { os_crypt: { encrypted_key: 'fake-key' } }
+    );
+    assert.equal(fs.existsSync(path.join(destinationRoot, 'Default', 'Preferences')), false);
+    assert.equal(
+      fs.readFileSync(path.join(destinationRoot, 'Default', 'Network', 'Cookies'), 'utf8'),
+      'cookie-db'
+    );
+    assert.equal(
+      fs.readFileSync(path.join(destinationRoot, 'Default', 'Network', 'Cookies-wal'), 'utf8'),
+      'wal'
+    );
+
+    assert.equal(fs.existsSync(path.join(destinationRoot, 'Default', 'History')), false);
+    assert.equal(fs.existsSync(path.join(destinationRoot, 'SingletonLock')), false);
+    assert.equal(
+      fs.existsSync(path.join(destinationRoot, 'Default', 'Network', 'Cookies-shm')),
+      false
+    );
+    assert.deepEqual(result.copied.slice().sort(), [
+      path.join('Default', 'Network', 'Cookies'),
+      path.join('Default', 'Network', 'Cookies-wal'),
+      'Local State'
+    ].sort());
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(destinationRoot, { recursive: true, force: true });
+  }
+});
+
+test('copyProfileForImport keeps legacy cookie files at the profile root', async () => {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-legacy-source-'));
+  const destinationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-legacy-target-'));
+  try {
+    const sourceProfile = path.join(userDataDir, 'Default');
+    fs.mkdirSync(sourceProfile, { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), '{}');
+    fs.writeFileSync(path.join(sourceProfile, 'Cookies'), 'legacy-db');
+    fs.writeFileSync(path.join(sourceProfile, 'Cookies-journal'), 'journal');
+
+    await copyProfileForImport({
+      userDataDir,
+      profileName: 'Default',
+      destinationRoot
+    });
+
+    assert.equal(
+      fs.readFileSync(path.join(destinationRoot, 'Default', 'Cookies'), 'utf8'),
+      'legacy-db'
+    );
+    assert.equal(
+      fs.readFileSync(path.join(destinationRoot, 'Default', 'Cookies-journal'), 'utf8'),
+      'journal'
+    );
+    assert.equal(fs.existsSync(path.join(destinationRoot, 'Default', 'Network')), false);
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(destinationRoot, { recursive: true, force: true });
+  }
+});
+
+test('browser import discovery reports only display names and profile labels', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-import-info-'));
+  try {
+    const localAppData = path.join(root, 'LocalAppData');
+    const executable = path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
+    const userDataDir = path.join(localAppData, 'Microsoft', 'Edge', 'User Data');
+    fs.mkdirSync(path.dirname(executable), { recursive: true });
+    fs.mkdirSync(path.join(userDataDir, 'Default', 'Network'), { recursive: true });
+    fs.writeFileSync(executable, '');
+    fs.writeFileSync(path.join(userDataDir, 'Default', 'Network', 'Cookies'), 'db');
+    fs.writeFileSync(path.join(userDataDir, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Default' }
+    }));
+
+    const info = getBrowserImportInfo({
+      env: { LOCALAPPDATA: localAppData },
+      progId: 'MSEdgeHTM'
+    });
+    assert.deepEqual(info, {
+      available: true,
+      browserId: 'edge',
+      browserName: 'Edge',
+      profileName: 'Default'
+    });
+    assert.equal(JSON.stringify(info).includes(root), false);
+
+    const none = getBrowserImportInfo({
+      env: { LOCALAPPDATA: path.join(root, 'empty') },
+      progId: ''
+    });
+    assert.deepEqual(none, { available: false, browserName: '', profileName: '' });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('locked profile copy errors stay recognizable for the retry dialog', async () => {
+  assert.equal(isProfileBusyError({ code: 'EBUSY' }), true);
+  assert.equal(isProfileBusyError({ code: 'EPERM' }), true);
+  assert.equal(isProfileBusyError({ code: 'EACCES' }), true);
+  assert.equal(isProfileBusyError({ code: 'ENOENT' }), false);
+  assert.equal(isProfileBusyError(null), false);
+
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-busy-source-'));
+  const destinationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-busy-target-'));
+  try {
+    fs.mkdirSync(path.join(userDataDir, 'Default'), { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'Default', 'Cookies'), 'db');
+
+    await assert.rejects(
+      copyProfileForImport({
+        userDataDir,
+        profileName: 'Default',
+        destinationRoot,
+        copyFile: async () => {
+          const error = new Error('The process cannot access the file.');
+          error.code = 'EBUSY';
+          throw error;
+        }
+      }),
+      (error) => isProfileBusyError(error)
+    );
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(destinationRoot, { recursive: true, force: true });
+  }
+});
+
+test('copyProfileForImport rejects profile names outside the browser profile folders', async () => {
+  const userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-invalid-source-'));
+  const destinationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-copy-invalid-target-'));
+  try {
+    fs.mkdirSync(path.join(userDataDir, 'Default'), { recursive: true });
+    fs.writeFileSync(path.join(userDataDir, 'Default', 'Cookies'), 'db');
+
+    for (const profileName of ['../Default', 'Profile 1/../../x', '']) {
+      await assert.rejects(
+        copyProfileForImport({ userDataDir, profileName, destinationRoot }),
+        /Invalid browser profile name/
+      );
+    }
+  } finally {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(destinationRoot, { recursive: true, force: true });
+  }
+});
+
+test('browser import candidates include every installed profile, default browser first', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ytmd-import-candidates-'));
+  try {
+    const localAppData = path.join(root, 'LocalAppData');
+    const edgeExe = path.join(localAppData, 'Microsoft', 'Edge', 'Application', 'msedge.exe');
+    const chromeExe = path.join(localAppData, 'Google', 'Chrome', 'Application', 'chrome.exe');
+    const edgeData = path.join(localAppData, 'Microsoft', 'Edge', 'User Data');
+    const chromeData = path.join(localAppData, 'Google', 'Chrome', 'User Data');
+    fs.mkdirSync(path.dirname(edgeExe), { recursive: true });
+    fs.mkdirSync(path.dirname(chromeExe), { recursive: true });
+    fs.writeFileSync(edgeExe, '');
+    fs.writeFileSync(chromeExe, '');
+    for (const [dataDir, profiles] of [
+      [edgeData, ['Default']],
+      [chromeData, ['Default', 'Profile 1']]
+    ]) {
+      for (const profile of profiles) {
+        const cookieFile = path.join(dataDir, profile, 'Network', 'Cookies');
+        fs.mkdirSync(path.dirname(cookieFile), { recursive: true });
+        fs.writeFileSync(cookieFile, profile);
+      }
+    }
+    fs.writeFileSync(path.join(edgeData, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Default' }
+    }));
+    fs.writeFileSync(path.join(chromeData, 'Local State'), JSON.stringify({
+      profile: { last_used: 'Profile 1' }
+    }));
+    fs.utimesSync(path.join(chromeData, 'Default', 'Network', 'Cookies'), new Date(1000), new Date(1000));
+    fs.utimesSync(path.join(chromeData, 'Profile 1', 'Network', 'Cookies'), new Date(2000), new Date(2000));
+
+    const candidates = findImportCandidates({
+      env: { LOCALAPPDATA: localAppData },
+      progId: 'MSEdgeHTM'
+    });
+    assert.deepEqual(
+      candidates.map((candidate) => `${candidate.id}:${candidate.profileName}`),
+      ['edge:Default', 'chrome:Profile 1', 'chrome:Default']
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

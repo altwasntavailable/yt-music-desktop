@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.1 — 2026-11-28
+
+### Fixed
+
+- Google sign-in no longer dead-ends on **"Couldn't sign you in — This browser
+  or app may not be secure."** The app now offers to import the existing
+  Google/YouTube session from Chrome, Edge, Brave, or Vivaldi. With your
+  consent it copies the selected browser's cookie database to a temporary
+  profile, imports only Google/YouTube cookies, and deletes the copy. The real
+  browser profile is never modified. Close the browser first if it is running.
+- The separate browser sign-in fallback now disables Chromium's automation
+  signal (`navigator.webdriver`), which Google rejects, while keeping the
+  private stdio debugging pipe.
+- Browser import now tries other profiles and installed browsers when the
+  first profile has no saved YouTube session.
+- The imported session is verified before the app reports success; a partial
+  import is cleared instead of leaving the UI falsely signed in.
+- Temporary import profiles are cleaned up on quit and at the next startup, so
+  a crash or timeout cannot leave a copied cookie database in `%TEMP%`.
+- Sign-out waits for an in-flight cookie import before clearing the session.
+
 ## 1.3.0 — 2026-11-28
 
 ### Added
