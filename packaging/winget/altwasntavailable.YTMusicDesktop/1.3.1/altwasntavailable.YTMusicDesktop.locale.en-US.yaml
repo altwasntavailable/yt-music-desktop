@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+PackageIdentifier: altwasntavailable.YTMusicDesktop
+PackageVersion: 1.3.1
+PackageLocale: en-US
+Publisher: altwasntavailable
+PublisherUrl: https://github.com/altwasntavailable
+PublisherSupportUrl: https://github.com/altwasntavailable/yt-music-desktop/issues
+Author: ALT
+PackageName: YT Music Desktop
+PackageUrl: https://github.com/altwasntavailable/yt-music-desktop
+License: MIT
+LicenseUrl: https://github.com/altwasntavailable/yt-music-desktop/blob/main/LICENSE
+Copyright: Copyright (c) 2026 ALT
+ShortDescription: Unofficial YouTube Music desktop app with ad blocking, an offline library, M4A/MP3/MP4 downloads, and Windows desktop integration.
+Description: >-
+  An unofficial, audio-first YouTube Music desktop player for Windows. It wraps
+  the official YouTube Music player with ad blocking, a system tray, media keys,
+  lyrics, an equalizer, SponsorBlock, Discord Rich Presence, and offline
+  downloads for the current track or playlist as M4A, MP3, or MP4.
+Moniker: yt-music-desktop
+Tags:
+  - youtube-music
+  - music
+  - desktop
+  - adblock
+  - offline-downloads
+  - playlist
+ReleaseNotesUrl: https://github.com/altwasntavailable/yt-music-desktop/releases/tag/v1.3.1
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

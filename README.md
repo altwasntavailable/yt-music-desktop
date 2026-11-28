@@ -97,6 +97,11 @@ Each release publishes `SHA256SUMS.txt` next to the installer and portable build
 certutil -hashfile YT-Music-Desktop-Setup-1.3.1.exe SHA256
 ```
 
+1.3.1 SHA-256 values:
+
+- Installer: `0ced8ab40a727b58d2928eb1b9e06fde54a3f5ece09327f3b05272dabc15b1f9`
+- Portable: `aae1427f3e6666b58122c67b0fbeb9475e3e678b45ec5cb44f883c2d27ae42ca`
+
 Starting with the automated release workflow, builds also attach GitHub build
 provenance attestations. Verify one with the GitHub CLI:
 
