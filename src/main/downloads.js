@@ -10,6 +10,11 @@ const { app, net, shell } = require('electron');
 
 const config = require('./config');
 const {
+  delay,
+  isTransientReplaceError,
+  replaceFileWithRetry
+} = require('./fs-utils');
+const {
   FORMATS,
   AUDIO_FORMATS,
   QUALITY_VALUES,
@@ -92,6 +97,48 @@ function toolsDir() {
 
 function bundledToolPath() {
   return path.join(toolsDir(), process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+}
+
+/**
+ * Windows keeps an executable image locked while any process still runs it.
+ * A download from a previous app session can survive a crash, so before
+ * giving up on a locked yt-dlp.exe, stop only processes whose image is the
+ * app-managed tool. No other yt-dlp installation is touched.
+ */
+async function stopStaleManagedTool(target) {
+  if (process.platform !== 'win32' || !target) return false;
+  const script = [
+    '$target = [System.IO.Path]::GetFullPath($env:YTMD_TOOL_TARGET)',
+    '$matches = @(Get-Process -Name yt-dlp -ErrorAction SilentlyContinue | Where-Object {',
+    '  try {',
+    '    $_.Path -and ([System.IO.Path]::GetFullPath($_.Path) -eq $target)',
+    '  } catch { $false }',
+    '})',
+    'if ($matches.Count -gt 0) {',
+    '  $matches | Stop-Process -Force -ErrorAction SilentlyContinue',
+    '  Write-Output "stopped"',
+    '}'
+  ].join('\n');
+
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script
+    ], {
+      windowsHide: true,
+      timeout: 10000,
+      encoding: 'utf8',
+      env: { ...process.env, YTMD_TOOL_TARGET: target }
+    });
+    return /stopped/i.test(String(stdout || ''));
+  } catch (error) {
+    appendLog(`could not stop a stale yt-dlp process: ${error.message}`);
+    return false;
+  }
 }
 
 function normalizeDirCandidate(value) {
@@ -1082,7 +1129,25 @@ async function installTool() {
       clearTimeout(timer);
     }
 
-    fs.renameSync(temp, target);
+    try {
+      await replaceFileWithRetry(temp, target);
+    } catch (error) {
+      if (!isTransientReplaceError(error)) throw error;
+
+      // The target is still held open. A crashed download leaves yt-dlp.exe
+      // running, and Windows will not let a new image replace it. Clear a
+      // read-only attribute left by antivirus, stop only the app-managed
+      // copy, then retry with a longer backoff.
+      appendLog(`yt-dlp.exe is locked (${error.code}); checking for a stale process`);
+      try {
+        fs.chmodSync(target, 0o666);
+      } catch (chmodError) {}
+      const stopped = await stopStaleManagedTool(target);
+      if (stopped) await delay(500);
+      await replaceFileWithRetry(temp, target, {
+        delaysMs: [250, 500, 1000, 1500, 2000]
+      });
+    }
     try {
       if (process.platform !== 'win32') fs.chmodSync(target, 0o755);
     } catch (error) {}
@@ -1102,9 +1167,16 @@ async function installTool() {
       || error.name === 'TimeoutError'
       || /aborted|timed out|timeout/i.test(String(error.message || ''))
     );
-    const message = aborted
-      ? 'yt-dlp download timed out. Check your connection and try again.'
-      : (error && error.message) || 'Could not download yt-dlp.';
+    const locked = isTransientReplaceError(error);
+    let message = (error && error.message) || 'Could not download yt-dlp.';
+    if (aborted) {
+      message = 'yt-dlp download timed out. Check your connection and try again.';
+    } else if (locked) {
+      // Never expose the raw filesystem rename path. The actionable cause is
+      // almost always another process or antivirus holding the old binary.
+      message = 'Windows is still using yt-dlp.exe. Close any other YT Music Desktop window, wait a few seconds for Windows Security to finish, then try again.';
+      appendLog(`could not replace yt-dlp.exe (${error.code || 'unknown'}): ${error.message}`);
+    }
     emit({ type: 'tool-error', message });
     return { ok: false, error: 'download-failed', message };
   } finally {
@@ -1392,6 +1464,7 @@ async function startMany(payload) {
   const options = payload && typeof payload === 'object' ? payload : {};
   if (shuttingDown) return { ok: false, error: 'shutting-down' };
   if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (installing) return { ok: false, error: 'tool-installing', message: 'Wait for yt-dlp to finish installing.' };
   if (batch) return { ok: false, error: 'batch-running' };
 
   const list = Array.isArray(options.items) ? options.items : [];
@@ -1407,6 +1480,7 @@ async function startMany(payload) {
   // were resolving. Never overwrite it and orphan the running pump.
   if (shuttingDown) return { ok: false, error: 'shutting-down' };
   if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (installing) return { ok: false, error: 'tool-installing', message: 'Wait for yt-dlp to finish installing.' };
   if (batch) return { ok: false, error: 'batch-running' };
 
   if (!tool) {
@@ -1645,6 +1719,7 @@ async function start(meta, options = {}) {
   if (!clean) return { ok: false, error: 'invalid' };
   if (shuttingDown) return { ok: false, error: 'shutting-down', message: 'The app is shutting down.' };
   if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (installing) return { ok: false, error: 'tool-installing', message: 'Wait for yt-dlp to finish installing.' };
 
   const opts = options && typeof options === 'object' ? options : {};
   const batchOwner = opts.__batch && typeof opts.__batch === 'object' ? opts.__batch : null;
@@ -1655,8 +1730,10 @@ async function start(meta, options = {}) {
   const [tool, ffmpeg] = await Promise.all([probeTool(), probeFfmpeg()]);
 
   // Cancellation/shutdown can happen during the probe await. Check the batch
-  // token before doing any work that could spawn yt-dlp.
+  // token and tool state before doing any work that could spawn yt-dlp.
   if (shuttingDown) return { ok: false, error: 'shutting-down' };
+  if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (installing) return { ok: false, error: 'tool-installing', message: 'Wait for yt-dlp to finish installing.' };
   if (batchOwner && (batchOwner.cancelRequested || batch !== batchOwner)) {
     return { ok: false, error: 'cancelled' };
   }
@@ -1926,6 +2003,7 @@ async function retry(meta, options = {}) {
   if (!clean) return { ok: false, error: 'invalid' };
   if (shuttingDown) return { ok: false, error: 'shutting-down' };
   if (updating) return { ok: false, error: 'tool-updating', message: 'Wait for the yt-dlp update to finish.' };
+  if (installing) return { ok: false, error: 'tool-installing', message: 'Wait for yt-dlp to finish installing.' };
   if (jobs.has(clean.videoId)) return { ok: false, error: 'already-running' };
 
   // findItem() drops a stale entry whose file no longer exists, so a retry can

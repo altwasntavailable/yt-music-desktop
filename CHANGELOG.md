@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.2 — 2026-11-28
+
+### Fixed
+
+- Installing or reinstalling `yt-dlp` no longer fails with a raw
+  `EPERM: operation not permitted, rename …` error when Windows or antivirus
+  briefly locks `yt-dlp.exe`. The app retries the replacement, closes only a
+  stale app-managed `yt-dlp` process when necessary, and shows an actionable
+  message if the executable is still busy.
+- Downloads are blocked while `yt-dlp` is being installed, so the installer can
+  never replace the tool under an active download.
+- A failed `yt-dlp` install or update no longer shows the same error toast
+  twice.
+
 ## 1.3.1 — 2026-11-28
 
 ### Fixed

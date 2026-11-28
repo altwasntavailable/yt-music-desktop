@@ -3562,6 +3562,8 @@ async function installYtDlp() {
   const result = await desktop.downloads.installTool().catch((error) => ({ ok: false, message: error.message }));
   if (!result || !result.ok) {
     toast(result && result.message ? result.message : 'Could not install yt-dlp.', 9000);
+  } else {
+    toast(`yt-dlp ${result.version ? `v${result.version}` : ''} installed.`, 6000);
   }
   if (downloadsInstallBtn) downloadsInstallBtn.disabled = false;
   loadDownloads(true);
@@ -4176,22 +4178,16 @@ function bindDownloads() {
       setDownloadProgress(-1);
     } else if (event.type === 'tool-progress') {
       if (downloadsInstallBtn) downloadsInstallBtn.textContent = `Installing… ${Math.round(event.percent || 0)}%`;
-    } else if (event.type === 'tool-ready') {
-      toast(`yt-dlp ${event.version ? `v${event.version}` : ''} installed.`, 6000);
-      loadDownloads(true);
-    } else if (event.type === 'tool-error') {
-      toast(event.message || 'Could not install yt-dlp.', 9000);
+    } else if (event.type === 'tool-ready' || event.type === 'tool-error'
+      || event.type === 'tool-updated' || event.type === 'tool-update-error') {
+      // installYtDlp()/updateYtDlp() own the terminal toast so a failed action
+      // cannot show the same error twice (once from the event, once from the
+      // IPC result).
       loadDownloads(true);
     } else if (event.type === 'removed') {
       state.downloads.items = (state.downloads.items || []).filter((item) => item.id !== event.id);
       renderDownloads();
       loadDownloads(false);
-    } else if (event.type === 'tool-updated') {
-      toast(`yt-dlp updated${event.version ? ` to v${event.version}` : ''}.`, 6000);
-      loadDownloads(true);
-    } else if (event.type === 'tool-update-error') {
-      toast(event.message || 'Could not update yt-dlp.', 9000);
-      loadDownloads(true);
     }
   });
 

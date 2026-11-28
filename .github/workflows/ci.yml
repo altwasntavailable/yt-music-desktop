@@ -31,6 +31,7 @@ jobs:
           node --check src/main/watchdog.js
           node --check src/main/downloads.js
           node --check src/main/download-utils.js
+          node --check src/main/fs-utils.js
           node --check src/main/desktop-integration.js
           node --check src/main/tray.js
           node --check src/main/config.js
