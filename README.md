@@ -1,39 +1,79 @@
+<div align="center">
+
+<img src="assets/icon.png" width="96" alt="YT Music Desktop icon">
+
 # YT Music Desktop
 
-An unofficial, audio-first YouTube Music desktop player for Windows.
+**Ad blocking and offline MP3/MP4 downloads for YouTube Music — in a real Windows desktop app.**
 
-It uses the official YouTube Music web player inside a desktop shell, so your playlists, liked songs, recommendations, search, and account stay exactly as they are. There is no separate music library; offline copies are optional and only created when you request them.
+Unofficial. Not affiliated with YouTube or Google.
 
-![YT Music Desktop](assets/icon.png)
+[![Download for Windows](https://img.shields.io/badge/Download-Windows-ff0000?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/altwasntavailable/yt-music-desktop/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/altwasntavailable/yt-music-desktop?style=for-the-badge)](https://github.com/altwasntavailable/yt-music-desktop/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/altwasntavailable/yt-music-desktop/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/altwasntavailable/yt-music-desktop/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/altwasntavailable/yt-music-desktop?style=for-the-badge)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?style=for-the-badge&logo=windows)](https://github.com/altwasntavailable/yt-music-desktop/releases)
+
+</div>
+
+![YT Music Desktop](docs/screenshots/player.png)
+
+<div align="center">
+  <sub>Ad blocking · offline playlist downloads · lyrics · equalizer · tray playback · sleep/resume recovery</sub>
+</div>
+
+## Why YT Music Desktop?
+
+| | |
+| --- | --- |
+| **Block ads and interruptions** | Network-level filtering, automatic skip, hidden overlays, and automatic “Still watching?” dismissal. |
+| **Download music for offline listening** | Save the current track or the current playlist as **MP3** or **MP4**. Human-readable filenames, queue progress, and duplicate skipping. |
+| **Built to stay alive** | Renderer recovery plus a detached watchdog for main-process hangs after sleep/resume or long background sessions. |
+| **A real desktop app** | System tray, media keys, browser-based Google sign-in, lyrics, 10-band equalizer, Discord Rich Presence, and automatic updates. |
+
+> **Ad blocking and offline downloading are best-effort and may conflict with YouTube's Terms of Service.** Use them only for content you are allowed to access or save. See [Ad blocking](#ad-blocking) and [Offline downloads](#offline-downloads).
+
+## Demo
+
+![YT Music Desktop demo](docs/demo.gif)
+
+## Install
+
+Download **[the latest release](https://github.com/altwasntavailable/yt-music-desktop/releases/latest)**.
+
+- **Installer:** [YT-Music-Desktop-Setup-1.2.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.2.1.exe)
+- **Portable:** [YT-Music-Desktop-Portable-1.2.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.2.1.exe)
+- **All releases:** https://github.com/altwasntavailable/yt-music-desktop/releases
+- **Verify:** compare the installer with `SHA256SUMS.txt` from the same release.
+- **Winget:** manifest prepared in [`packaging/winget`](packaging/winget); submission to the Winget repository is pending.
+- **Requirements:** Windows 10/11 x64. `yt-dlp` is required for offline downloads; FFmpeg is required for MP3 conversion.
+- The installer is not code-signed, so Windows SmartScreen may show a warning. See [Security and privacy](#security-and-privacy).
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/adblock.png" alt="Ad blocking and playback settings"><br><sub><b>Ad blocking and interruptions</b></sub></td>
+    <td width="50%"><img src="docs/screenshots/offline.png" alt="Offline playlist download with MP3/MP4 choice"><br><sub><b>Current playlist as MP3 or MP4</b></sub></td>
+  </tr>
+</table>
 
 ## Features
 
+- **Ad blocking** — network filtering plus automatic ad skipping, with overlays hidden. Best-effort; see [Ad blocking](#ad-blocking).
+- **Offline downloads** — save the current track or playlist as MP3/MP4 with yt-dlp, then play downloaded tracks inside the app from the **Offline** panel.
+- **No "Still watching?" interruptions** — automatically dismisses YouTube's “Still watching?” / “Video paused” prompt and resumes playback.
 - **Your real YouTube Music library** — sign in with Google and use your playlists, liked songs, home feed, search, radio, and queue.
 - **Browser-based sign-in** — Google blocks embedded sign-in, so the app opens a real Chrome/Edge window and imports the session automatically.
-- **Audio-only mode** — hides video and keeps album artwork on screen. Music is streamed through the official player and is never saved to disk.
-- **Ad blocking** — network filtering plus automatic ad skipping, with ad overlays hidden. Best-effort; see [Ad blocking](#ad-blocking).
-- **No "Still watching?" interruptions** — automatically dismisses YouTube's “Still watching?” / “Video paused” prompt and resumes playback. Toggle it under **Settings → Playback**.
+- **Audio-only mode** — hides video and keeps album artwork on screen.
 - **SponsorBlock** — skips community-submitted sponsor reads, intros, outros, and non-music sections using the public SponsorBlock database.
-- **Playback extras** — speed control (0.5×–2×), fade transitions, and automatic volume normalization.
-- **Offline downloads** — save the current track or playlist as MP3/MP4 with yt-dlp, then play downloaded tracks inside the app from the **Offline** panel.
-- **Automatic updates** — installed builds check for updates on startup and every six hours.
 - **Lyrics panel** — time-synced lyrics from [LRCLIB](https://lrclib.net), with plain-text fallback and a button to open YouTube Music's own lyrics.
 - **10-band equalizer** — presets, preamp, and custom bands applied live through Web Audio.
 - **Discord Rich Presence** — one click to connect; shows the current song on your Discord profile.
 - **System tray** — closing the window keeps the music playing; control playback and panels from the tray.
-- **Automatic crash recovery** — recovers the UI or player renderer if Chromium freezes after the app has been in the background or after the PC wakes from sleep. A separate watchdog process also restarts the app if its main process stops responding.
-- **YouTube Music styling** — dark YT Music colors, red accents, and a custom frameless desktop chrome.
-- **Quality-of-life extras** — prevent sleep while playing, remember window position, keyboard shortcuts, and no intrusive prompts.
-
-## Install
-
-Download the latest installer from the [GitHub Releases page](https://github.com/altwasntavailable/yt-music-desktop/releases), or run the installer built locally:
-
-```text
-dist/YT-Music-Desktop-Setup-1.1.1.exe
-```
-
-The installer is unsigned, so Windows SmartScreen may show a warning. Choose **More info → Run anyway** if you trust the build. Each release includes a `SHA256SUMS.txt`; see [SECURITY.md](SECURITY.md#release-verification) for verification steps.
+- **Automatic crash recovery** — recovers the UI or player renderer if Chromium freezes; a separate watchdog process restarts the app if its main process stops responding.
+- **Playback extras** — speed control (0.5×–2×), fade transitions, and automatic volume normalization.
+- **Automatic updates** — installed builds check for updates on startup and every six hours.
 
 ## Security and privacy
 
@@ -41,6 +81,25 @@ The installer is unsigned, so Windows SmartScreen may show a warning. Choose **M
 - [PRIVACY.md](PRIVACY.md) lists what is stored locally and which third-party services the app contacts.
 - [LICENSE](LICENSE) covers the project under the MIT license.
 - Downloaded `yt-dlp` binaries are verified against the official SHA-256 checksum list before the app runs them.
+- No telemetry, analytics, or developer-operated servers.
+
+## Release integrity
+
+Each release publishes `SHA256SUMS.txt` next to the installer and portable build:
+
+```powershell
+certutil -hashfile YT-Music-Desktop-Setup-1.2.1.exe SHA256
+```
+
+Starting with the automated release workflow, builds also attach GitHub build
+provenance attestations. Verify one with the GitHub CLI:
+
+```powershell
+gh attestation verify YT-Music-Desktop-Setup-1.2.1.exe --repo altwasntavailable/yt-music-desktop
+```
+
+Code signing is not configured yet; SmartScreen may warn on first launch. See
+[SECURITY.md](SECURITY.md#release-verification).
 
 ## First launch
 
@@ -122,6 +181,8 @@ Each download is saved as `Artist - Title.ext`, so the file name matches the tra
 
 Files are stored in the app's downloads folder (use the folder button in the Offline panel to open it). Downloads continue while the app is in the tray, and cancelled or failed downloads are cleaned up.
 
+**If the folder looks empty:** playlist downloads run one track at a time, so files appear as each track finishes. If there is no progress, check the **Last error** line in the Offline panel or `%APPDATA%\YT Music Desktop\downloads\downloads.log`.
+
 > Offline downloading may conflict with YouTube's Terms of Service and the rights of content owners. Use it only for content you are allowed to save, and at your own discretion.
 
 ## Automatic updates
@@ -168,13 +229,18 @@ Requirements: Node.js 20+ and npm.
 
 ```bash
 npm install
-npm start          # run the app
-npm run dev        # run with dev logging/context menu inspection
-npm run dist       # build the Windows NSIS installer into dist/
-npm run pack       # build an unpacked app into dist/win-unpacked/
+npm start             # run the app
+npm run dev           # run with dev logging/context menu inspection
+npm run dist          # build the Windows NSIS installer into dist/
+npm run dist:portable # build the portable executable into dist/
+npm run pack          # build an unpacked app into dist/win-unpacked/
 ```
 
-The icon assets are generated by `scripts/generate-icons.js` (pure JS, no native image dependencies). `npm run dist` regenerates them before packaging.
+The icon assets are generated by `scripts/generate-icons.js` (pure JS, no native image dependencies). The build scripts regenerate them before packaging.
+
+## Contributing
+
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), and use the issue templates for bugs and feature requests. Security reports should use the private vulnerability reporting link in [SECURITY.md](SECURITY.md).
 
 ## Project structure
 
@@ -199,7 +265,10 @@ build/                       Installer icon resources
 SECURITY.md                  Security model and private reporting
 PRIVACY.md                   Local data and third-party services
 CHANGELOG.md                 Release history
-.github/                     CI and Dependabot configuration
+CONTRIBUTING.md              Development setup and pull-request guidance
+docs/                        Screenshots, demo GIF, social preview
+packaging/winget/            Winget manifest for package-manager installs
+.github/                     CI, release automation, issue templates, Dependabot
 ```
 
 ## Notes and limitations
@@ -244,8 +313,11 @@ Open the **Offline** panel and click **Install yt-dlp**, or install it separatel
 **MP3 is disabled in the download dialog**  
 MP3 conversion needs FFmpeg. Install FFmpeg and make sure `ffmpeg -version` works in a terminal, or set `YTMD_FFMPEG_PATH` to the executable. MP4 downloads still work without FFmpeg but use a lower-quality progressive stream.
 
+**The downloads folder looks empty**  
+Playlist downloads run one track at a time; files appear as each track finishes. If the Offline panel shows no progress and no files appear, check the **Last error** line there or open `%APPDATA%\YT Music Desktop\downloads\downloads.log`. The folder button opens `%APPDATA%\YT Music Desktop\downloads`.
+
 **A download fails immediately**  
-YouTube sometimes rejects requests from yt-dlp until it updates. Try again, or update `yt-dlp.exe` from its GitHub releases page. The last yt-dlp error message is shown in a toast and printed to the log.
+YouTube sometimes rejects requests from yt-dlp until it updates. Try again, or update `yt-dlp.exe` from its GitHub releases page. The last yt-dlp error is shown in the Offline panel and written to `downloads.log`.
 
 **Check for updates does nothing**  
 Automatic updates only work in a packaged/installed build. In development, the app reports that updates are unavailable. For your own builds, update the `build.publish` owner/repo in `package.json` or set `YTMD_UPDATE_URL`.

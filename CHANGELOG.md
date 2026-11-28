@@ -12,6 +12,13 @@
 - Playlist downloads now stop immediately with a clear error if FFmpeg cannot be
   used, instead of attempting every track.
 
+### Packaging
+
+- Added a portable executable to the release assets.
+- Added a GitHub Actions release workflow with build provenance attestations.
+- Added README screenshots/demo, issue templates, a contributing guide, and a
+  validated Winget manifest.
+
 ## 1.2.0
 
 ### Added
