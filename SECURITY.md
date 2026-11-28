@@ -2,10 +2,8 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published `1.2.x` release. The
-`1.3.x` line will be covered once it is published; pre-release builds from
-`main` are not supported. Older builds may be missing important recovery and
-integrity fixes.
+Security fixes are provided for the latest published `1.3.x` release.
+Older builds may be missing important recovery and integrity fixes.
 
 ## Reporting a vulnerability
 
@@ -55,10 +53,10 @@ GitHub and ask for a private channel before sharing details.
 
 Each release publishes a `SHA256SUMS.txt` file alongside the installer and
 portable build. Verify the file you downloaded before running it; the example
-below uses the latest published release, 1.2.1:
+below uses the latest published release, 1.3.0:
 
 ```powershell
-certutil -hashfile YT-Music-Desktop-Setup-1.2.1.exe SHA256
+certutil -hashfile YT-Music-Desktop-Setup-1.3.0.exe SHA256
 ```
 
 Compare the output with the value in `SHA256SUMS.txt` from the same release.

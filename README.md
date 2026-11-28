@@ -27,9 +27,9 @@ Unofficial. Not affiliated with YouTube or Google.
 | | |
 | --- | --- |
 | **Block ads and interruptions** | Network-level filtering, automatic skip, hidden overlays, and automatic “Still watching?” dismissal. |
-| **Download music for offline listening** | Save the current track or the current playlist as **MP3** or **MP4** today, with **M4A**, MP3 bitrate/VBR choices, MP4 quality choices, tags/cover art, and SponsorBlock cutting in the unreleased 1.3.0 update. Human-readable filenames, queue progress, and duplicate skipping. |
+| **Download music for offline listening** | Save the current track or the current playlist as **M4A**, **MP3**, or **MP4**, with bitrate/quality choices, tags and cover art, SponsorBlock cutting, human-readable filenames, queue progress, and duplicate skipping. |
 | **Built to stay alive** | Renderer recovery plus a detached watchdog for main-process hangs after sleep/resume or long background sessions. |
-| **A real desktop app** | System tray, media keys, browser-based Google sign-in, lyrics, 10-band equalizer, Discord Rich Presence, and automatic updates. The unreleased 1.3.0 update adds taskbar controls, jump lists, notifications, a sleep timer, and Start with Windows. |
+| **A real desktop app** | System tray, media keys, browser-based Google sign-in, lyrics, 10-band equalizer, Discord Rich Presence, taskbar controls, jump lists, notifications, a sleep timer, Start with Windows, and automatic updates. |
 
 > **Ad blocking and offline downloading are best-effort and may conflict with YouTube's Terms of Service.** Use them only for content you are allowed to access or save. See [Ad blocking](#ad-blocking) and [Offline downloads](#offline-downloads).
 
@@ -41,15 +41,13 @@ Unofficial. Not affiliated with YouTube or Google.
 
 Download **[the latest release](https://github.com/altwasntavailable/yt-music-desktop/releases/latest)**.
 
-- **Installer:** [YT-Music-Desktop-Setup-1.2.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.2.1.exe)
-- **Portable:** [YT-Music-Desktop-Portable-1.2.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.2.1.exe)
+- **Installer:** [YT-Music-Desktop-Setup-1.3.0.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.3.0.exe)
+- **Portable:** [YT-Music-Desktop-Portable-1.3.0.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.3.0.exe)
 - **All releases:** https://github.com/altwasntavailable/yt-music-desktop/releases
 - **Verify:** compare each downloaded file with `SHA256SUMS.txt` from the same release.
 - **Winget:** manifest prepared in [`packaging/winget`](packaging/winget); submission to the Winget repository is pending.
 - **Requirements:** Windows 10/11 x64. `yt-dlp` is required for offline downloads. FFmpeg is required for MP3, tags/cover art, SponsorBlock cutting, and merged MP4; M4A and progressive MP4 work without it. See [Download options](#download-options).
 - The installer is not code-signed, so Windows SmartScreen may show a warning. See [Security and privacy](#security-and-privacy).
-
-> **Unreleased:** 1.3.0 is in development. The download links above still install 1.2.1. M4A downloads, format/quality options, the expanded offline library and player, and the Windows taskbar integration below are part of the 1.3.0 work.
 
 ## Screenshots
 
@@ -63,8 +61,8 @@ Download **[the latest release](https://github.com/altwasntavailable/yt-music-de
 ## Features
 
 - **Ad blocking** — network filtering plus automatic ad skipping, with overlays hidden. Best-effort; see [Ad blocking](#ad-blocking).
-- **Offline downloads** — save the current track or playlist as M4A (original audio), MP3 (128–320 kbps or best VBR), or MP4 (480p–1080p or best) with yt-dlp, then play them from the searchable **Offline** library. See [Download options](#download-options). The new formats and library tools are in the unreleased 1.3.0 update.
-- **Offline-first** — if YouTube Music fails to load or the player crashes, the error screen offers the **Offline library**, so downloaded music stays playable without the page. (Unreleased in 1.3.0.)
+- **Offline downloads** - save the current track or playlist as M4A (original audio), MP3 (128-320 kbps or best VBR), or MP4 (480p-1080p or best) with yt-dlp, then play them from the searchable **Offline** library. See [Download options](#download-options).
+- **Offline-first** - if YouTube Music fails to load or the player crashes, the error screen offers the **Offline library**, so downloaded music stays playable without the page.
 - **No "Still watching?" interruptions** — automatically dismisses YouTube's “Still watching?” / “Video paused” prompt and resumes playback.
 - **Your real YouTube Music library** — sign in with Google and use your playlists, liked songs, home feed, search, radio, and queue.
 - **Browser-based sign-in** — Google blocks embedded sign-in, so the app opens a real Chrome/Edge window and imports the session automatically.
@@ -74,7 +72,7 @@ Download **[the latest release](https://github.com/altwasntavailable/yt-music-de
 - **10-band equalizer** — presets, preamp, and custom bands applied live through Web Audio.
 - **Discord Rich Presence** — one click to connect; shows the current song on your Discord profile.
 - **System tray** — closing the window keeps the music playing; control playback and panels from the tray.
-- **Windows desktop integration** — taskbar thumbnail buttons, jump-list actions and recent downloads, taskbar download progress and completion/error overlays, and optional track notifications while hidden. (Unreleased in 1.3.0.)
+- **Windows desktop integration** - taskbar thumbnail buttons, jump-list actions and recent downloads, taskbar download progress and completion/error overlays, and optional track notifications while hidden.
 - **Automatic crash recovery** — recovers the UI or player renderer if Chromium freezes; a separate watchdog process restarts the app if its main process stops responding.
 - **Playback extras** — speed control (0.5×–2×), fade transitions, and automatic volume normalization; the speed setting also applies to offline playback.
 - **Diagnostics** — copy app/tool/download status and recent logs, or open the app data and download folders. Nothing is uploaded.
@@ -93,17 +91,17 @@ Download **[the latest release](https://github.com/altwasntavailable/yt-music-de
 
 ## Release integrity
 
-Each release publishes `SHA256SUMS.txt` next to the installer and portable build. The examples below use 1.2.1, the latest published release:
+Each release publishes `SHA256SUMS.txt` next to the installer and portable build. The examples below use 1.3.0:
 
 ```powershell
-certutil -hashfile YT-Music-Desktop-Setup-1.2.1.exe SHA256
+certutil -hashfile YT-Music-Desktop-Setup-1.3.0.exe SHA256
 ```
 
 Starting with the automated release workflow, builds also attach GitHub build
 provenance attestations. Verify one with the GitHub CLI:
 
 ```powershell
-gh attestation verify YT-Music-Desktop-Setup-1.2.1.exe --repo altwasntavailable/yt-music-desktop
+gh attestation verify YT-Music-Desktop-Setup-1.3.0.exe --repo altwasntavailable/yt-music-desktop
 ```
 
 Code signing is not configured yet; SmartScreen may warn on first launch. See
