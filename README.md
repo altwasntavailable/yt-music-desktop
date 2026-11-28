@@ -41,8 +41,8 @@ Unofficial. Not affiliated with YouTube or Google.
 
 Download **[the latest release](https://github.com/altwasntavailable/yt-music-desktop/releases/latest)**.
 
-- **Installer:** [YT-Music-Desktop-Setup-1.3.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.3.1.exe)
-- **Portable:** [YT-Music-Desktop-Portable-1.3.1.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.3.1.exe)
+- **Installer:** [YT-Music-Desktop-Setup-1.3.2.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Setup-1.3.2.exe)
+- **Portable:** [YT-Music-Desktop-Portable-1.3.2.exe](https://github.com/altwasntavailable/yt-music-desktop/releases/latest/download/YT-Music-Desktop-Portable-1.3.2.exe)
 - **All releases:** https://github.com/altwasntavailable/yt-music-desktop/releases
 - **Verify:** compare each downloaded file with `SHA256SUMS.txt` from the same release.
 - **Winget:** manifest prepared in [`packaging/winget`](packaging/winget); submission to the Winget repository is pending.
@@ -91,22 +91,22 @@ Download **[the latest release](https://github.com/altwasntavailable/yt-music-de
 
 ## Release integrity
 
-Each release publishes `SHA256SUMS.txt` next to the installer and portable build. The examples below use 1.3.1:
+Each release publishes `SHA256SUMS.txt` next to the installer and portable build. The examples below use 1.3.2:
 
 ```powershell
-certutil -hashfile YT-Music-Desktop-Setup-1.3.1.exe SHA256
+certutil -hashfile YT-Music-Desktop-Setup-1.3.2.exe SHA256
 ```
 
-1.3.1 SHA-256 values:
+1.3.2 SHA-256 values:
 
-- Installer: `0ced8ab40a727b58d2928eb1b9e06fde54a3f5ece09327f3b05272dabc15b1f9`
-- Portable: `aae1427f3e6666b58122c67b0fbeb9475e3e678b45ec5cb44f883c2d27ae42ca`
+- Installer: `3cae90b1fa19671c79c067f09291937240008bdf30dc5ae67383a021c2fbd6c5`
+- Portable: `04eeda40377d766494c5f486a30b28de81054245b540036b79102c79a8209e32`
 
 Starting with the automated release workflow, builds also attach GitHub build
 provenance attestations. Verify one with the GitHub CLI:
 
 ```powershell
-gh attestation verify YT-Music-Desktop-Setup-1.3.1.exe --repo altwasntavailable/yt-music-desktop
+gh attestation verify YT-Music-Desktop-Setup-1.3.2.exe --repo altwasntavailable/yt-music-desktop
 ```
 
 Code signing is not configured yet; SmartScreen may warn on first launch. See
@@ -385,6 +385,9 @@ In Discord, open **User Settings → Activity Privacy** and enable **Display cur
 
 **Offline downloads say yt-dlp is required**
 Open the **Offline** panel and click **Install yt-dlp**. The panel shows the installed version. If the app manages `yt-dlp.exe`, use **Update yt-dlp** to refresh it; if you supplied your own copy with `YTMD_YTDLP_PATH` or `PATH`, update it with its package manager.
+
+**Installing yt-dlp fails with "operation not permitted"**
+Windows or antivirus can briefly lock `yt-dlp.exe` while scanning it. The app retries the replacement and clears a stale app-managed process automatically. If it still fails, close other YT Music Desktop windows, wait a few seconds, then click **Install yt-dlp** again. Do not run the copy in the app's `tools` folder manually while installing.
 
 **MP3 is unavailable in the download dialog**
 MP3 conversion needs FFmpeg. Install FFmpeg and make sure `ffmpeg -version` works in a terminal, or set `YTMD_FFMPEG_PATH` to the executable. M4A downloads keep the original audio and work without FFmpeg. MP4 downloads also work without FFmpeg but use a single progressive stream, which may be lower quality.

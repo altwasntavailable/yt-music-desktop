@@ -55,10 +55,10 @@ GitHub and ask for a private channel before sharing details.
 
 Each release publishes a `SHA256SUMS.txt` file alongside the installer and
 portable build. Verify the file you downloaded before running it; the example
-below uses the latest published release, 1.3.1:
+below uses the latest published release, 1.3.2:
 
 ```powershell
-certutil -hashfile YT-Music-Desktop-Setup-1.3.1.exe SHA256
+certutil -hashfile YT-Music-Desktop-Setup-1.3.2.exe SHA256
 ```
 
 Compare the output with the value in `SHA256SUMS.txt` from the same release.
