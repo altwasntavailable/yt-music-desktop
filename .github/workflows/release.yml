@@ -35,6 +35,13 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match package.json version $version"
           }
 
+      - name: Ensure Electron binary
+        shell: pwsh
+        run: |
+          if (!(Test-Path node_modules\electron\dist\electron.exe)) {
+            node node_modules\electron\install.js
+          }
+
       - name: Build installer
         run: npm run dist
 

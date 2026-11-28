@@ -67,5 +67,12 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Ensure Electron binary
+        shell: pwsh
+        run: |
+          if (!(Test-Path node_modules\electron\dist\electron.exe)) {
+            node node_modules\electron\install.js
+          }
+
       - name: Build unpacked Windows app
         run: npm run pack
